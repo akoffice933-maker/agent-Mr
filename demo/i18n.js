@@ -83,6 +83,9 @@ const I18N = {
     "shots.2": "Сквозная аналитика: расход, CTR и CPA по трём площадкам",
     "shots.3": "Журнал аудита и рекомендации по оптимизации",
     "foot.left": "agent-Mr · Unified AI Ads Agent · демо на детерминированных seed-данных",
+    "videos.title": "Видео",
+    "video.1": "Аудит → рекомендации → включение управления → пауза кампаний с подтверждением (35 с)",
+    "video.2": "Сводный расход + кросс-платформенный отчёт с рекомендациями Advisor (12 с)",
   },
   en: {
     "nav.demo": "Demo",
@@ -167,6 +170,9 @@ const I18N = {
     "shots.2": "Cross-platform analytics: spend, CTR and CPA across three platforms",
     "shots.3": "Audit log and optimization recommendations",
     "foot.left": "agent-Mr · Unified AI Ads Agent · demo on deterministic seed data",
+    "videos.title": "Videos",
+    "video.1": "Audit → recommendations → enabling control → pausing campaigns with confirmation (35 s)",
+    "video.2": "Spend report + cross-platform report with Advisor recommendations (12 s)",
   },
 };
 
