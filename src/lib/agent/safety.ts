@@ -1,0 +1,114 @@
+// Safety layer: dry-run, spend limits, confirmations, audit log.
+
+import { eq, sql } from "drizzle-orm";
+import { db } from "@/db";
+import { auditLog, metricsDaily, settings } from "@/db/schema";
+import { dateNDaysAgo } from "@/lib/format";
+
+export interface SafetySettings {
+  dryRun: boolean;
+  readOnly: boolean;
+  dailyLimit: number;
+  weeklyLimit: number;
+  monthlyLimit: number;
+  confirmBudget: boolean;
+}
+
+const DEFAULTS: SafetySettings = {
+  dryRun: true,
+  readOnly: false,
+  dailyLimit: 50000,
+  weeklyLimit: 250000,
+  monthlyLimit: 900000,
+  confirmBudget: true,
+};
+
+export async function getSettings(): Promise<SafetySettings> {
+  const rows = await db.select().from(settings);
+  const map = new Map(rows.map((r) => [r.key, r.value]));
+  return {
+    dryRun: map.get("dry_run") === true,
+    readOnly: map.get("read_only") === true,
+    dailyLimit: Number(map.get("daily_limit") ?? DEFAULTS.dailyLimit),
+    weeklyLimit: Number(map.get("weekly_limit") ?? DEFAULTS.weeklyLimit),
+    monthlyLimit: Number(map.get("monthly_limit") ?? DEFAULTS.monthlyLimit),
+    confirmBudget: map.get("confirm_budget") !== false,
+  };
+}
+
+export async function updateSettings(patch: Partial<SafetySettings>): Promise<SafetySettings> {
+  const entries: [string, unknown][] = [];
+  if (patch.dryRun !== undefined) entries.push(["dry_run", patch.dryRun]);
+  if (patch.readOnly !== undefined) entries.push(["read_only", patch.readOnly]);
+  if (patch.dailyLimit !== undefined) entries.push(["daily_limit", patch.dailyLimit]);
+  if (patch.weeklyLimit !== undefined) entries.push(["weekly_limit", patch.weeklyLimit]);
+  if (patch.monthlyLimit !== undefined) entries.push(["monthly_limit", patch.monthlyLimit]);
+  if (patch.confirmBudget !== undefined) entries.push(["confirm_budget", patch.confirmBudget]);
+  for (const [key, value] of entries) {
+    await db
+      .insert(settings)
+      .values({ key, value })
+      .onConflictDoUpdate({ target: settings.key, set: { value } });
+  }
+  return getSettings();
+}
+
+export async function spendSince(days: number): Promise<number> {
+  const from = dateNDaysAgo(days - 1);
+  const rows = await db
+    .select({ total: sql<number>`coalesce(sum(${metricsDaily.spend}), 0)` })
+    .from(metricsDaily)
+    .where(sql`${metricsDaily.date} >= ${from}`);
+  return Number(rows[0]?.total ?? 0);
+}
+
+export interface BudgetCheck {
+  ok: boolean;
+  reason?: string;
+  spendToday: number;
+  limit: number;
+}
+
+/** Checks whether `additionalDaily` ₽/day of new spend fits the daily limit. */
+export async function checkBudgetHeadroom(additionalDaily: number): Promise<BudgetCheck> {
+  const s = await getSettings();
+  const spendToday = await spendSince(1);
+  const limit = s.dailyLimit;
+  if (spendToday + additionalDaily > limit) {
+    return {
+      ok: false,
+      spendToday,
+      limit,
+      reason: `Дневной лимит ${limit.toLocaleString("ru-RU")} ₽ будет превышен: сегодня уже потрачено ${Math.round(
+        spendToday
+      ).toLocaleString("ru-RU")} ₽, новое действие добавляет ещё ~${Math.round(additionalDaily).toLocaleString(
+        "ru-RU"
+      )} ₽/день.`,
+    };
+  }
+  return { ok: true, spendToday, limit };
+}
+
+export interface AuditEntry {
+  actor: string;
+  tool: string;
+  params?: unknown;
+  platforms: string[];
+  dryRun: boolean;
+  status: string;
+  summary: string;
+}
+
+export async function writeAudit(e: AuditEntry): Promise<void> {
+  await db.insert(auditLog).values({
+    actor: e.actor,
+    tool: e.tool,
+    params: (e.params ?? {}) as Record<string, unknown>,
+    platforms: e.platforms.join(","),
+    dryRun: e.dryRun,
+    status: e.status,
+    summary: e.summary,
+  });
+}
+
+export { eq };

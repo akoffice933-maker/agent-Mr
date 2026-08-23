@@ -1,0 +1,18 @@
+import { NextResponse } from "next/server";
+import { runAgent } from "@/lib/agent/run";
+
+export const dynamic = "force-dynamic";
+
+export async function POST(req: Request) {
+  try {
+    const body = (await req.json()) as { message?: string };
+    const message = (body.message ?? "").trim();
+    if (!message) return NextResponse.json({ error: "empty" }, { status: 400 });
+    if (message.length > 500) return NextResponse.json({ error: "too long" }, { status: 400 });
+    const { user, agent } = await runAgent(message, "chat");
+    return NextResponse.json({ user, agent });
+  } catch (e) {
+    console.error("agent chat error", e);
+    return NextResponse.json({ error: "internal" }, { status: 500 });
+  }
+}

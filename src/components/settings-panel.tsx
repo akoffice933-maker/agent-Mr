@@ -1,0 +1,160 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { Icon } from "./icons";
+import { Card } from "./ui";
+
+interface SettingsState {
+  dryRun: boolean;
+  readOnly: boolean;
+  dailyLimit: number;
+  weeklyLimit: number;
+  monthlyLimit: number;
+  confirmBudget: boolean;
+}
+
+function Toggle({
+  on,
+  onChange,
+  label,
+  desc,
+  danger = false,
+}: {
+  on: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  desc: string;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!on)}
+      className="flex w-full items-center gap-3 rounded-lg border border-line bg-panel2 px-3.5 py-3 text-left transition-colors hover:border-line2"
+    >
+      <span
+        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+          on ? (danger ? "bg-bad" : "bg-accent") : "bg-panel3"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-4 w-4 rounded-full bg-snow transition-all ${on ? "left-4.5 translate-x-0.5" : "left-0.5"}`}
+          style={{ left: on ? "1.125rem" : "0.125rem" }}
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-snow">{label}</span>
+        <span className="block text-[11px] leading-snug text-fog">{desc}</span>
+      </span>
+      <span className={`ml-auto text-[10px] font-bold uppercase ${on ? (danger ? "text-bad" : "text-accent") : "text-fog"}`}>
+        {on ? "вкл" : "выкл"}
+      </span>
+    </button>
+  );
+}
+
+export function SettingsPanel() {
+  const [s, setS] = useState<SettingsState | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then(setS)
+      .catch(() => undefined);
+  }, []);
+
+  const patch = (p: Partial<SettingsState>) => setS((prev) => (prev ? { ...prev, ...p } : prev));
+
+  const saveLimits = async () => {
+    if (!s) return;
+    setBusy(true);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dailyLimit: s.dailyLimit, weeklyLimit: s.weeklyLimit, monthlyLimit: s.monthlyLimit }),
+    });
+    setBusy(false);
+    setSaved("Лимиты сохранены — изменения сразу учитываются агентом.");
+    setTimeout(() => setSaved(null), 3500);
+  };
+
+  if (!s) {
+    return (
+      <Card className="p-6 text-sm text-fog">
+        <Icon name="refresh" className="mr-2 inline h-4 w-4 animate-spin" /> Загрузка настроек безопасности…
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card className="space-y-2.5 p-4">
+        <Toggle
+          on={s.dryRun}
+          onChange={(v) => {
+            patch({ dryRun: v });
+            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dryRun: v }) });
+          }}
+          label="Dry-run по умолчанию"
+          desc="Все операции записи выполняются как предпросмотр: изменения применяются только после явного подтверждения."
+        />
+        <Toggle
+          on={s.confirmBudget}
+          onChange={(v) => {
+            patch({ confirmBudget: v });
+            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmBudget: v }) });
+          }}
+          label="Подтверждение действий, влияющих на бюджет"
+          desc="Обязательное подтверждение до применения ставок, бюджетов и продвижения (требование ТЗ, разд. 10)."
+        />
+        <Toggle
+          on={s.readOnly}
+          onChange={(v) => {
+            patch({ readOnly: v });
+            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ readOnly: v }) });
+          }}
+          label="Режим «только чтение»"
+          desc="Для аналитиков и гостей: любые изменения блокируются, чтение и отчёты доступны."
+          danger
+        />
+      </Card>
+
+      <Card className="p-4">
+        <h3 className="font-display text-sm font-bold tracking-tight">Лимиты расхода</h3>
+        <p className="mt-1 text-[11px] text-fog">
+          Агент проверяет каждое действие, добавляющее расход: если прогноз превышает лимит — действие блокируется с объяснением.
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          {(
+            [
+              ["dailyLimit", "Дневной, ₽"],
+              ["weeklyLimit", "Недельный, ₽"],
+              ["monthlyLimit", "Месячный, ₽"],
+            ] as const
+          ).map(([key, label]) => (
+            <label key={key} className="block">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-fog">{label}</span>
+              <input
+                type="number"
+                value={s[key]}
+                min={0}
+                step={1000}
+                onChange={(e) => patch({ [key]: Number(e.target.value) } as Partial<SettingsState>)}
+                className="num mt-1 w-full rounded-lg border border-line bg-panel2 px-3 py-2 text-sm text-snow focus:border-accent/50 focus:outline-none"
+              />
+            </label>
+          ))}
+        </div>
+        <button
+          onClick={saveLimits}
+          disabled={busy}
+          className="mt-3 rounded-lg bg-accent px-4 py-2 text-sm font-bold text-accent-ink transition-transform hover:-translate-y-px disabled:opacity-50"
+        >
+          {busy ? "Сохранение…" : "Сохранить лимиты"}
+        </button>
+        {saved ? <div className="mt-2 text-xs text-good">{saved}</div> : null}
+      </Card>
+    </div>
+  );
+}
