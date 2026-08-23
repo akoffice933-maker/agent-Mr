@@ -1,0 +1,26 @@
+{
+  "name": "@agent-mr/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server for Unified AI Ads Agent — exposes unified tools over MCP, proxying the agent's REST API (ТЗ этап 7).",
+  "type": "module",
+  "bin": {
+    "agent-mr-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "selftest": "tsx src/selftest.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@agent-mr/telegram-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram bot for Unified AI Ads Agent — thin client of the agent's REST API (ТЗ этап 8, US-6).",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "selftest": "tsx src/selftest.ts"
+  },
+  "dependencies": {
+    "grammy": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.0"
+  }
+}

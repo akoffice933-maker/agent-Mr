@@ -1,0 +1,80 @@
+# Unified AI Ads Agent — self-host (ТЗ раздел 11, этап 9)
+#
+#   docker compose up --build
+#   # app: http://localhost:3000 · postgres: localhost:5432
+#
+# Переменные окружения — в .env (см. .env.example).
+# Telegram-бот и MCP-сервер — отдельные процессы (профили ниже);
+# на Vercel-деплое они живут на VPS/Fly и ходят на app по AGENT_API_URL.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppass
+      POSTGRES_DB: app_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d app_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://appuser:apppass@db:5432/app_db
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me-please-0123456789}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_ADS_DEVELOPER_TOKEN: ${GOOGLE_ADS_DEVELOPER_TOKEN:-}
+      GOOGLE_ADS_CUSTOMER_ID: ${GOOGLE_ADS_CUSTOMER_ID:-}
+      YANDEX_OAUTH_CLIENT_ID: ${YANDEX_OAUTH_CLIENT_ID:-}
+      YANDEX_OAUTH_CLIENT_SECRET: ${YANDEX_OAUTH_CLIENT_SECRET:-}
+      AVITO_CLIENT_ID: ${AVITO_CLIENT_ID:-}
+      AVITO_CLIENT_SECRET: ${AVITO_CLIENT_SECRET:-}
+      AVITO_USER_ID: ${AVITO_USER_ID:-}
+    ports:
+      - "3000:3000"
+
+  # ── Опциональные клиенты REST API ─────────────────────────────────────────
+  telegram-bot:
+    image: node:20-alpine
+    working_dir: /app/telegram-bot
+    volumes:
+      - .:/app
+    command: sh -c "npm ci --no-audit --no-fund && npm run build && npm start"
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      AGENT_API_URL: http://app:3000
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+    depends_on:
+      - app
+    profiles: ["clients"]
+
+  mcp-server:
+    image: node:20-alpine
+    working_dir: /app/mcp-server
+    volumes:
+      - .:/app
+    command: sh -c "npm ci --no-audit --no-fund && npm run build && node dist/index.js"
+    environment:
+      AGENT_API_URL: http://app:3000
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+    depends_on:
+      - app
+    profiles: ["clients"]
+
+volumes:
+  pgdata:
