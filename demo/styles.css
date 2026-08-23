@@ -267,3 +267,64 @@ footer { border-top: 1px solid var(--line); padding: 36px 0; margin-top: 40px; }
 .shot:hover { transform: translateY(-3px); border-color: var(--line2); text-decoration: none; }
 .shot img { width: 100%; display: block; }
 .shot span { display: block; padding: 12px 14px; font-size: 12.5px; color: var(--fog); border-top: 1px solid var(--line); }
+
+/* ── tables: horizontal scroll on narrow screens ─────────────────────────── */
+.tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -2px; padding: 0 2px; }
+table.tbl { min-width: 560px; }
+.tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.cmds table { min-width: 640px; }
+.change .cname, .change .cmeta { overflow-wrap: anywhere; }
+
+/* ── mobile: nav ─────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .nav-links { display: none; }
+  .nav-inner { height: 52px; }
+  .logo { font-size: 15px; white-space: nowrap; }
+  .gh-badge { padding: 5px 10px; font-size: 12px; }
+}
+
+/* ── mobile: hero ────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .hero { padding: 44px 0 32px; }
+  .hero h1 { font-size: 30px; }
+  .hero p.sub { font-size: 15px; }
+  .hero-cta { gap: 10px; }
+  .hero-cta .btn { flex: 1; justify-content: center; padding: 12px 14px; font-size: 13.5px; }
+  .plat-pill { padding: 6px 11px; font-size: 12px; }
+  .platforms-row { gap: 8px; }
+  .hero-media { margin-top: 4px; }
+  .media-badge { top: 10px; left: 10px; font-size: 10px; padding: 4px 9px; }
+}
+
+/* ── mobile: sections & demo ─────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  section { padding: 40px 0; }
+  .section-title { font-size: 22px; }
+  .section-sub { font-size: 14px; }
+  .chat-card { min-height: 440px; border-radius: 12px; }
+  .chat-head { padding: 10px 12px; gap: 8px; }
+  .avatar { width: 30px; height: 30px; border-radius: 8px; font-size: 12px; }
+  .chat-head .who b { font-size: 13px; white-space: nowrap; }
+  .chat-head .who span { display: none; }
+  .chat-head .mode { font-size: 9px; padding: 3px 8px; letter-spacing: 0.04em; }
+  .chat-body { padding: 12px; gap: 12px; }
+  .msg .bubble { font-size: 14px; }
+  .card { font-size: 12.5px; padding: 12px; }
+  .chips { padding: 10px 12px; gap: 6px; }
+  .chip { font-size: 11px; padding: 5px 10px; }
+  .chat-input { padding: 10px 12px; gap: 6px; }
+  .chat-input input { padding: 10px 12px; font-size: 13.5px; }
+  .chat-input button { padding: 0 16px; font-size: 13.5px; }
+  .side-card { padding: 14px; gap: 12px; }
+  .side-card h3 { font-size: 13px; }
+  .preview-actions { flex-direction: column; }
+  .preview-actions .pv-btn { padding: 11px; font-size: 14px; }
+}
+
+/* ── mobile: architecture & shots ────────────────────────────────────────── */
+@media (max-width: 560px) {
+  .arch-row { flex-direction: column; }
+  .arch-box { padding: 11px 14px; }
+  .arch-box b { font-size: 13px; }
+  .arch-box span { font-size: 11.5px; }
+}

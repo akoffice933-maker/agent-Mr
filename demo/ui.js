@@ -75,10 +75,10 @@
             <td class="num">${r.campaigns}</td>
           </tr>`).join("");
         return `<div class="card"><h4>${t2("Расход за", "Spend for")} ${card.days} ${t2("дн.", "days")}</h4>
-          <table class="tbl"><thead><tr><th>${t2("Платформа", "Platform")}</th><th class="num">${t2("Расход", "Spend")}</th><th class="num">${t2("Показы", "Impressions")}</th><th class="num">${t2("Клики", "Clicks")}</th><th class="num">CTR</th><th class="num">CPA</th><th class="num">${t2("Камп.", "Camps.")}</th></tr></thead>
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>${t2("Платформа", "Platform")}</th><th class="num">${t2("Расход", "Spend")}</th><th class="num">${t2("Показы", "Impressions")}</th><th class="num">${t2("Клики", "Clicks")}</th><th class="num">CTR</th><th class="num">CPA</th><th class="num">${t2("Камп.", "Camps.")}</th></tr></thead>
           <tbody>${rows}
           <tr class="total-row"><td>${t2("Итого", "Total")}</td><td class="num">${money(card.total.spend)}</td><td class="num" colspan="5"></td></tr>
-          </tbody></table></div>`;
+          </tbody></table></div></div>`;
       }
       case "cpa": {
         const rows = card.rows.map((r) => `
@@ -89,8 +89,8 @@
             <td class="num">${r.cpa ? money(r.cpa) : "—"}</td>
           </tr>`).join("");
         return `<div class="card"><h4>CPA · ${card.days} ${t2("дн.", "days")}</h4>
-          <table class="tbl"><thead><tr><th>${t2("Платформа", "Platform")}</th><th class="num">${t2("Расход", "Spend")}</th><th class="num">${t2("Конверсии", "Conversions")}</th><th class="num">CPA</th></tr></thead>
-          <tbody>${rows}</tbody></table></div>`;
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>${t2("Платформа", "Platform")}</th><th class="num">${t2("Расход", "Spend")}</th><th class="num">${t2("Конверсии", "Conversions")}</th><th class="num">CPA</th></tr></thead>
+          <tbody>${rows}</tbody></table></div></div>`;
       }
       case "campaigns": {
         const rows = card.rows.map((c) => {
@@ -105,8 +105,8 @@
           </tr>`;
         }).join("");
         return `<div class="card"><h4>${t2("Кампании и объявления (7 дней) · статус:", "Campaigns & listings (7 days) · status:")} ${card.status === "all" ? t2("все", "all") : card.status}</h4>
-          <table class="tbl"><thead><tr><th>${t2("Название", "Name")}</th><th class="num">${t2("Бюджет", "Budget")}</th><th class="num">${t2("Расход", "Spend")}</th><th class="num">CTR</th><th class="num">CPA</th></tr></thead>
-          <tbody>${rows}</tbody></table></div>`;
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>${t2("Название", "Name")}</th><th class="num">${t2("Бюджет", "Budget")}</th><th class="num">${t2("Расход", "Spend")}</th><th class="num">CTR</th><th class="num">CPA</th></tr></thead>
+          <tbody>${rows}</tbody></table></div></div>`;
       }
       case "keywords": {
         const rows = card.rows.map((k) => `
@@ -119,8 +119,8 @@
             <td class="num">${money(k.spend)}</td>
           </tr>`).join("");
         return `<div class="card"><h4>${t2("Топ ключевых фраз по расходу", "Top keywords by spend")}</h4>
-          <table class="tbl"><thead><tr><th>${t2("Ключ", "Keyword")}</th><th class="num">${t2("Ставка", "Bid")}</th><th class="num">${t2("Клики", "Clicks")}</th><th class="num">${t2("Конв.", "Conv.")}</th><th class="num">CPA</th><th class="num">${t2("Расход", "Spend")}</th></tr></thead>
-          <tbody>${rows}</tbody></table>
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>${t2("Ключ", "Keyword")}</th><th class="num">${t2("Ставка", "Bid")}</th><th class="num">${t2("Клики", "Clicks")}</th><th class="num">${t2("Конв.", "Conv.")}</th><th class="num">CPA</th><th class="num">${t2("Расход", "Spend")}</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>
           <div class="cost-note">${t2("Ключи без конверсий — кандидаты на минус-фразы или понижение ставки.", "Keywords without conversions are candidates for negative keywords or bid reduction.")}</div></div>`;
       }
       case "chats": {
@@ -132,8 +132,8 @@
             <td style="color:var(--fog)">${esc(c.last)}</td>
           </tr>`).join("");
         return `<div class="card"><h4>${t2("Чаты Авито:", "Avito chats:")} ${card.total} ${t2("диалогов, ", "dialogs, ")}${card.leads} ${t2("лидов", "leads")}</h4>
-          <table class="tbl"><thead><tr><th>${t2("Клиент", "Client")}</th><th>${t2("Статус", "Status")}</th><th class="num">${t2("Сообщений", "Messages")}</th><th>${t2("Последнее сообщение", "Last message")}</th></tr></thead>
-          <tbody>${rows}</tbody></table></div>`;
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>${t2("Клиент", "Client")}</th><th>${t2("Статус", "Status")}</th><th class="num">${t2("Сообщений", "Messages")}</th><th>${t2("Последнее сообщение", "Last message")}</th></tr></thead>
+          <tbody>${rows}</tbody></table></div></div>`;
       }
       case "audit": {
         const blocks = Object.entries(card.issues).filter(([, v]) => v.length).map(([p, list]) => `
@@ -151,8 +151,8 @@
             <td style="color:var(--accent)">${esc(r.impact)}</td>
           </tr>`).join("");
         return `<div class="card"><h4>${t2("Открытые рекомендации", "Open recommendations")}</h4>
-          <table class="tbl"><thead><tr><th class="num">#</th><th>${t2("Описание", "Description")}</th><th>${t2("Эффект", "Impact")}</th></tr></thead>
-          <tbody>${rows}</tbody></table>
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th class="num">#</th><th>${t2("Описание", "Description")}</th><th>${t2("Эффект", "Impact")}</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>
           <div class="cost-note">${t2("Скажите «Примени все рекомендации» (или «Примени рекомендацию 22») для подтверждения.", "Say “Apply all recommendations” (or “Apply recommendation 22”) to confirm.")}</div></div>`;
       }
       case "preview": {
