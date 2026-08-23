@@ -64,6 +64,7 @@ export const keywords = pgTable(
     campaignId: integer("campaign_id")
       .notNull()
       .references(() => campaigns.id),
+    externalId: text("external_id"), // platform keyword id (Direct keywordId / Google criterion id)
     text: text("text").notNull(),
     bid: doublePrecision("bid").notNull(),
     impressions: integer("impressions").notNull().default(0),
@@ -116,9 +117,25 @@ export const pendingActions = pgTable("pending_actions", {
   tool: text("tool").notNull(),
   params: jsonb("params"),
   preview: jsonb("preview"),
+  costDaily: doublePrecision("cost_daily"), // extra ₽/day the action adds, for limit re-check on approve
   status: text("status").notNull().default("pending"), // pending | applied | rejected
   source: text("source").notNull().default("chat"),
 });
+
+// ── OAuth tokens for real platform integrations (encrypted at rest) ────────
+export const oauthTokens = pgTable(
+  "oauth_tokens",
+  {
+    id: serial("id").primaryKey(),
+    platform: text("platform").notNull(), // google | yandex | avito
+    accessToken: text("access_token").notNull(), // AES-256-GCM ciphertext
+    refreshToken: text("refresh_token"), // AES-256-GCM ciphertext
+    expiresAt: timestamp("expires_at"),
+    extra: jsonb("extra"),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("oauth_tokens_platform_idx").on(t.platform)]
+);
 
 // ── Safety settings (key/value) ────────────────────────────────────────────
 export const settings = pgTable(
@@ -136,10 +153,11 @@ export const recommendations = pgTable("recommendations", {
   id: serial("id").primaryKey(),
   platform: text("platform").notNull(),
   campaignId: integer("campaign_id").references(() => campaigns.id),
-  type: text("type").notNull(),
-  description: text("description").notNull(),
-  impact: text("impact").notNull().default(""),
-  status: text("status").notNull().default("open"), // open | applied | dismissed
+    type: text("type").notNull(),
+    description: text("description").notNull(),
+    impact: text("impact").notNull().default(""),
+    params: jsonb("params"), // machine-readable effect params (e.g. budget_shift {from,to,percent})
+    status: text("status").notNull().default("open"), // open | applied | dismissed
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
