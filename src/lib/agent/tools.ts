@@ -209,7 +209,7 @@ export async function listCampaigns(i: ParsedIntent): Promise<ToolOutput> {
 export async function getKeywordPerformance(i: ParsedIntent): Promise<ToolOutput> {
   const platforms = defaultPlatforms(i.platforms, ["google", "yandex"]);
   const rows = await db
-    .select({ kw: keywords, campName: campaigns.name })
+    .select({ kw: keywords, campName: campaigns.name, campPlatform: campaigns.platform })
     .from(keywords)
     .innerJoin(campaigns, eq(keywords.campaignId, campaigns.id))
     .where(inArray(campaigns.platform, platforms))
@@ -219,7 +219,7 @@ export async function getKeywordPerformance(i: ParsedIntent): Promise<ToolOutput
   const stats: KeywordStat[] = rows.map((r) => ({
     id: r.kw.id,
     text: r.kw.text,
-    platform: platforms[0],
+    platform: r.campPlatform as Platform,
     campaign: r.campName,
     bid: r.kw.bid,
     impressions: r.kw.impressions,
@@ -407,6 +407,60 @@ export async function pauseLowCtrCampaigns(i: ParsedIntent): Promise<ToolOutput>
     },
     pending: { params: { ids: victims.map((c) => c.id), threshold } },
     auditSummary: `Подготовлена пауза ${victims.length} кампаний с CTR < ${threshold}%`,
+  };
+}
+
+// ─── set_campaign_status (write) ───────────────────────────────────────────
+export async function setCampaignStatus(i: ParsedIntent): Promise<ToolOutput> {
+  const name = String(i.params.name ?? "").trim();
+  const status = i.params.status === "active" ? "active" : "paused";
+  const platform = (i.platforms[0] ?? undefined) as Platform | undefined;
+  if (!name) {
+    return {
+      result: { kind: "text", text: "Не понял, какую именно кампанию вы имеете в виду. Укажите название, например: «Поставь на паузу „Поиск — Диваны на заказ“»." },
+      auditSummary: "set_campaign_status: не указано название",
+    };
+  }
+
+  const camps = await loadCampaigns();
+  const norm = name.toLowerCase();
+  const match =
+    camps.find((c) => (!platform || c.platform === platform) && c.name.toLowerCase() === norm) ??
+    camps.find((c) => (!platform || c.platform === platform) && (c.name.toLowerCase().includes(norm) || norm.includes(c.name.toLowerCase())));
+  if (!match) {
+    return {
+      result: { kind: "text", text: `Кампания «${name}» не найдена${platform ? ` в ${PLATFORM_LABEL[platform]}` : ""}. Попробуйте «Покажи все кампании», чтобы увидеть названия.` },
+      auditSummary: "set_campaign_status: кампания не найдена",
+    };
+  }
+
+  if (match.status === (status === "active" ? "active" : "paused")) {
+    return {
+      result: { kind: "text", text: `«${match.name}» (${PLATFORM_LABEL[match.platform as Platform]}) уже ${status === "active" ? "активна" : "на паузе"} — менять нечего.` },
+      auditSummary: `set_campaign_status: статус уже «${match.status}»`,
+    };
+  }
+
+  const changes: PreviewChange[] = [
+    {
+      entity: `${PLATFORM_LABEL[match.platform as Platform]} · кампания`,
+      name: match.name,
+      before: `Статус: ${match.status === "active" ? "Активна" : "Пауза"}`,
+      after: status === "active" ? "Статус: Активна" : "Статус: Пауза",
+    },
+  ];
+  const costDaily = status === "active" ? match.budgetDaily : 0;
+
+  return {
+    result: {
+      kind: "preview",
+      title: `${status === "active" ? "Запуск" : "Пауза"} «${match.name}»`,
+      changes,
+      cost: costDaily > 0 ? costDaily : undefined,
+      verdict: "pending",
+    },
+    pending: { params: { campaignId: match.id, status }, costDaily },
+    auditSummary: `${status === "active" ? "Запуск" : "Пауза"} «${match.name}» (${PLATFORM_LABEL[match.platform as Platform]})`,
   };
 }
 

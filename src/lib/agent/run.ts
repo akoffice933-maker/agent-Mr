@@ -1,8 +1,9 @@
-// Agent core: intent → tool routing → safety layer → audit → chat persistence.
+// Agent core: intent (LLM → rules) → adapter sync → tool routing → safety layer → audit → chat persistence.
 
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  accounts,
   campaigns,
   keywords,
   messages,
@@ -11,18 +12,23 @@ import {
   recommendations,
 } from "@/db/schema";
 import { fmtMoney } from "@/lib/format";
-import { parseIntent, WRITE_TOOLS } from "./router";
+import { resolveIntent, WRITE_TOOLS } from "./router";
 import type { ParsedIntent } from "./router";
 import { checkBudgetHeadroom, getSettings, writeAudit } from "./safety";
 import type { SafetySettings } from "./safety";
 import * as tools from "./tools";
 import type { AgentMeta, ChatMessageRow, Platform, ResultPayload, TraceStep } from "./types";
 import { PLATFORM_LABEL } from "./types";
+import { buildSessionContext } from "./session-context";
+import { persistBudgetShift, suggestBudgetShift } from "./cross-platform-advisor";
+import { syncAdapters, writeAdapters } from "@/lib/adapters";
+import type { WriteOp } from "@/lib/adapters/types";
 
 const TOOL_DESC: Record<string, string> = {
   get_spend_report: "сводный расход по платформам",
   compare_cpa: "сравнение CPA между площадками",
   pause_low_ctr_campaigns: "пауза кампаний с низким CTR",
+  set_campaign_status: "пауза/запуск конкретной кампании",
   promote_low_view_listings: "продвижение объявлений Авито",
   run_account_audit: "автоматический аудит кабинетов",
   adjust_bids: "корректировка ставок",
@@ -68,13 +74,20 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
   const text = raw.trim();
   const userRow = (await db.insert(messages).values({ role: "user", content: text }).returning())[0];
 
-  const intent = parseIntent(text);
+  const session = await buildSessionContext();
+  const resolved = await resolveIntent(text, session);
+  const intent = resolved.intent;
   const settings = await getSettings();
   const isWrite = WRITE_TOOLS.has(intent.tool);
   const trace: TraceStep[] = [];
 
   trace.push({
-    label: `AI Core: намерение распознано → ${intent.tool}`,
+    label:
+      resolved.engine === "llm"
+        ? `AI Core (LLM ${resolved.model}): намерение → ${intent.tool}`
+        : resolved.llmError
+          ? `AI Core: LLM недоступна (${resolved.llmError}) → rule-based → ${intent.tool}`
+          : `AI Core: намерение распознано (rule-based) → ${intent.tool}`,
     detail: TOOL_DESC[intent.tool] ?? intent.tool,
     status: "ok",
   });
@@ -88,8 +101,14 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
           ? ["google", "yandex"]
           : ["google", "yandex", "avito"];
 
+  // Adapter sync: in production mode pull fresh state from the platforms (no-op in sandbox).
+  const syncResults = await syncAdapters(defaultPlat);
+  const prodPlatforms = syncResults.filter((s) => s.mode === "production");
   trace.push({
     label: `Маршрутизация адаптерам: ${defaultPlat.map((p) => PLATFORM_LABEL[p]).join(", ")}`,
+    detail: prodPlatforms.length
+      ? prodPlatforms.map((s) => `${s.platform}: ${s.ok ? "sync ok" : "sync error: " + s.detail}`).join("; ")
+      : "sandbox-режим: данные из локального зеркала",
     status: "ok",
   });
 
@@ -125,7 +144,7 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
       if (costDaily > 0) {
         const check = await checkBudgetHeadroom(costDaily);
         if (!check.ok) {
-          trace.push({ label: "Safety-слой: превышен дневной лимит расхода", detail: check.reason, status: "block" });
+          trace.push({ label: "Safety-слой: превышен лимит расхода", detail: check.reason, status: "block" });
           result = {
             ...(result as Extract<ResultPayload, { kind: "preview" }>),
             verdict: "blocked",
@@ -134,7 +153,7 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
           auditStatus = "blocked";
         } else {
           trace.push({
-            label: `Лимиты: запас по дневному бюджету есть (${fmtMoney(check.spendToday)} из ${fmtMoney(check.limit)})`,
+            label: `Лимиты: запас есть (сегодня ${fmtMoney(check.spendToday)} из ${fmtMoney(check.limit)}; неделя ${fmtMoney(check.spendWeek)}; месяц ${fmtMoney(check.spendMonth)})`,
             status: "ok",
           });
         }
@@ -144,7 +163,14 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
         const pending = (
           await db
             .insert(pendingActions)
-            .values({ tool: intent.tool, params: out.pending.params, preview: result, status: "pending", source: actor })
+            .values({
+              tool: intent.tool,
+              params: out.pending.params,
+              preview: result,
+              costDaily,
+              status: "pending",
+              source: actor,
+            })
             .returning()
         )[0];
         pendingId = pending.id;
@@ -156,9 +182,14 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
     }
   }
 
-  const durationMs = Math.max(40, Date.now() - started) + 120;
+  const durationMs = Math.max(40, Date.now() - started);
   trace.push({
-    label: auditStatus === "blocked" ? "Действие отклонено политикой безопасности" : isWrite ? "Результат записан, ожидает подтверждения" : "Результат агрегирован и возвращён",
+    label:
+      auditStatus === "blocked"
+        ? "Действие отклонено политикой безопасности"
+        : isWrite
+          ? "Результат записан, ожидает подтверждения"
+          : "Результат агрегирован и возвращён",
     status: auditStatus === "blocked" ? "block" : "ok",
   });
 
@@ -172,7 +203,19 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
     pendingActionId: pendingId,
   };
 
-  const content = briefSummary(result);
+  let content = briefSummary(result);
+
+  // Cross-Platform Advisor (US-8): after analytics propose a budget shift if justified.
+  if (intent.tool === "get_spend_report" && result.kind === "spend_report") {
+    const s = suggestBudgetShift(result.rows, 25, 15);
+    if (s) {
+      const recId = await persistBudgetShift(s, result.period.days);
+      if (recId) {
+        content += `\n📈 Кросс-платформенная рекомендация: ${s.insight} (реком. #${recId} — скажите «примени рекомендацию ${recId}» или «все» для подтверждения).`;
+      }
+    }
+  }
+
   const agentRow = await insertAgentMessage(content, meta);
 
   await writeAudit({
@@ -204,6 +247,8 @@ async function dispatch(tool: string, intent: ParsedIntent, _settings: SafetySet
       return tools.runAccountAudit(intent);
     case "pause_low_ctr_campaigns":
       return tools.pauseLowCtrCampaigns(intent);
+    case "set_campaign_status":
+      return tools.setCampaignStatus(intent);
     case "adjust_bids":
       return tools.adjustBids(intent);
     case "create_campaign":
@@ -278,32 +323,89 @@ export async function resolvePending(id: number, decision: "approve" | "reject",
     });
   }
 
+  // Re-check budget policy at approval time: limits may have been exhausted since the preview.
+  const costDaily = Number(pending.costDaily ?? 0);
+  if (costDaily > 0) {
+    const check = await checkBudgetHeadroom(costDaily);
+    if (!check.ok) {
+      await db.update(pendingActions).set({ status: "rejected" }).where(eq(pendingActions.id, id));
+      await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "blocked", summary: `Отклонено при подтверждении #${id}: ${check.reason}` });
+      return insertAgentMessage(`Не применил действие #${id}: ${check.reason}`, {
+        tool: "apply_pending",
+        toolLabel: pending.tool,
+        platforms: [],
+        trace: [
+          { label: `Подтверждение #${id} получено, но лимиты расхода превышены`, status: "block" },
+          { label: "Действие отклонено, изменения не применялись", status: "block" },
+        ],
+        durationMs: 120,
+        result: { kind: "text", text: `Действие отклонено: ${check.reason}` },
+      });
+    }
+  }
+
   const params = (pending.params ?? {}) as Record<string, unknown>;
   const applied = await applyEffect(pending.tool, params);
-  await db.update(pendingActions).set({ status: "applied" }).where(eq(pendingActions.id, id));
-  await writeAudit({ actor, tool: pending.tool, params, platforms: applied.platforms, dryRun: false, status: "applied", summary: applied.summary });
 
-  return insertAgentMessage(`Выполнено: ${applied.summary}`, {
+  // Push the confirmed change to the real platforms (no-op detail in sandbox mode).
+  const adapterResults = await writeAdapters(applied.ops);
+  const adapterDetail = adapterResults.map((r) => `${r.platform}[${r.mode}]: ${r.detail ?? (r.ok ? "ok" : "error")}`).join("; ");
+
+  await db.update(pendingActions).set({ status: "applied" }).where(eq(pendingActions.id, id));
+  await writeAudit({
+    actor,
+    tool: pending.tool,
+    params,
+    platforms: applied.platforms,
+    dryRun: false,
+    status: "applied",
+    summary: `${applied.summary} · адаптеры: ${adapterDetail || "sandbox"}`,
+  });
+
+  return insertAgentMessage(`Выполнено: ${applied.summary}. ${adapterDetail ? `Платформы: ${adapterDetail}.` : ""} Все изменения зафиксированы в журнале аудита.`, {
     tool: "apply_pending",
     toolLabel: pending.tool,
     platforms: applied.platforms as Platform[],
     trace: [
       { label: `Подтверждение #${id} получено`, status: "ok" },
-      { label: "Адаптеры выполнили изменения", detail: applied.summary, status: "ok" },
+      { label: "Локальное зеркало обновлено", detail: applied.summary, status: "ok" },
+      { label: "Адаптеры: изменения переданы площадкам", detail: adapterDetail || "sandbox-режим", status: "ok" },
       { label: "Запись в audit-log создана", status: "ok" },
     ],
-    durationMs: 220,
-    result: { kind: "text", text: `Готово. ${applied.summary} Все изменения зафиксированы в журнале аудита.` },
+    durationMs: 240,
+    result: { kind: "text", text: `Готово. ${applied.summary}` },
   });
 }
 
-async function applyEffect(tool: string, params: Record<string, unknown>): Promise<{ summary: string; platforms: string[] }> {
+interface ApplyResult {
+  summary: string;
+  platforms: string[];
+  ops: { platform: Platform; op: WriteOp }[];
+}
+
+async function applyEffect(tool: string, params: Record<string, unknown>): Promise<ApplyResult> {
   switch (tool) {
     case "pause_low_ctr_campaigns": {
       const ids = (params.ids as number[]) ?? [];
       if (ids.length) await db.update(campaigns).set({ status: "paused" }).where(inArray(campaigns.id, ids));
-      const names = (await db.select({ name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(inArray(campaigns.id, ids)));
-      return { summary: `на паузу поставлено ${ids.length} камп. (${names.map((n) => `«${n.name}»`).join(", ")})`, platforms: [...new Set(names.map((n) => n.platform))] };
+      const names = await db.select({ id: campaigns.id, name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(inArray(campaigns.id, ids));
+      const byPlatform = new Map<Platform, number[]>();
+      for (const n of names) {
+        byPlatform.set(n.platform as Platform, [...(byPlatform.get(n.platform as Platform) ?? []), 0]);
+      }
+      const ops = [...byPlatform.entries()].map(([platform]) => ({ platform, op: { kind: "campaign_status", campaignIds: ids.filter((i) => names.some((n) => n.id === i)), status: "paused" } as WriteOp }));
+      return { summary: `на паузу поставлено ${ids.length} камп. (${names.map((n) => `«${n.name}»`).join(", ")})`, platforms: [...new Set(names.map((n) => n.platform))], ops };
+    }
+    case "set_campaign_status": {
+      const id = Number(params.campaignId);
+      const status = params.status === "active" ? "active" : "paused";
+      await db.update(campaigns).set({ status }).where(eq(campaigns.id, id));
+      const camp = (await db.select({ name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(eq(campaigns.id, id)))[0];
+      return {
+        summary: `«${camp?.name}» ${status === "active" ? "запущена" : "поставлена на паузу"}`,
+        platforms: camp ? [camp.platform] : [],
+        ops: camp ? [{ platform: camp.platform as Platform, op: { kind: "campaign_status", campaignIds: [id], status } as WriteOp }] : [],
+      };
     }
     case "adjust_bids": {
       const ids = (params.ids as number[]) ?? [];
@@ -312,12 +414,18 @@ async function applyEffect(tool: string, params: Record<string, unknown>): Promi
       for (const k of rows) {
         await db.update(keywords).set({ bid: Math.round(k.bid * factor * 10) / 10 }).where(eq(keywords.id, k.id));
       }
-      return { summary: `ставки изменены ×${factor} по ${ids.length} ключевым фразам`, platforms: ["google", "yandex"] };
+      const campIds = [...new Set(rows.map((k) => k.campaignId))];
+      const camps = await db.select({ platform: campaigns.platform }).from(campaigns).where(inArray(campaigns.id, campIds));
+      const byPlatform = new Map<Platform, number[]>();
+      for (const c of camps) byPlatform.set(c.platform as Platform, [...(byPlatform.get(c.platform as Platform) ?? []), 0]);
+      const ops = [...byPlatform.entries()].map(([platform]) => ({ platform, op: { kind: "bids_factor", keywordIds: ids, factor } as WriteOp }));
+      return { summary: `ставки изменены ×${factor} по ${ids.length} ключевым фразам`, platforms: [...byPlatform.keys()] as string[], ops };
     }
     case "create_campaign": {
       const platform = (params.platform as string) ?? "google";
+      const acc = (await db.select().from(accounts).where(eq(accounts.platform, platform)))[0];
       await db.insert(campaigns).values({
-        accountId: null,
+        accountId: acc?.id ?? null,
         platform,
         kind: "campaign",
         externalId: `${platform}-new-${Date.now() % 100000}`,
@@ -326,12 +434,21 @@ async function applyEffect(tool: string, params: Record<string, unknown>): Promi
         budgetDaily: Number(params.budget ?? 2000),
         strategy: String(params.strategy ?? "Автостратегия"),
       });
-      return { summary: `кампания «${params.name}» создана в ${PLATFORM_LABEL[platform as Platform]} и запущена`, platforms: [platform] };
+      return {
+        summary: `кампания «${params.name}» создана в ${PLATFORM_LABEL[platform as Platform]} и запущена`,
+        platforms: [platform],
+        ops: [{ platform: platform as Platform, op: { kind: "create_campaign", name: String(params.name ?? "Новая кампания"), budgetDaily: Number(params.budget ?? 2000), strategy: String(params.strategy ?? "") } as WriteOp }],
+      };
     }
     case "promote_low_view_listings": {
       const ids = (params.ids as number[]) ?? [];
-      if (ids.length) await db.update(campaigns).set({ promotion: "boost7" }).where(inArray(campaigns.id, ids));
-      return { summary: `${ids.length} объявлений Авито подключены к услуге «Поднять в поиске» на 7 дней`, platforms: ["avito"] };
+      const service = String(params.service ?? "boost7");
+      if (ids.length) await db.update(campaigns).set({ promotion: service === "boost7" ? "boost7" : "turbo" }).where(inArray(campaigns.id, ids));
+      return {
+        summary: `${ids.length} объявлений Авито подключены к услуге «Поднять в поиске» на 7 дней`,
+        platforms: ["avito"],
+        ops: [{ platform: "avito", op: { kind: "promote_listings", campaignIds: ids, service } as WriteOp }],
+      };
     }
     case "add_negative_keywords": {
       const campaignId = Number(params.campaignId);
@@ -340,23 +457,74 @@ async function applyEffect(tool: string, params: Record<string, unknown>): Promi
         await db.insert(negativeKeywords).values(words.map((w) => ({ campaignId, text: w, source: "agent" })));
       }
       const camp = (await db.select({ name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(eq(campaigns.id, campaignId)))[0];
-      return { summary: `${words.length} минус-фраз добавлено в «${camp?.name ?? campaignId}»`, platforms: camp ? [camp.platform] : [] };
+      return {
+        summary: `${words.length} минус-фраз добавлено в «${camp?.name ?? campaignId}»`,
+        platforms: camp ? [camp.platform] : [],
+        ops: camp ? [{ platform: camp.platform as Platform, op: { kind: "negative_keywords", campaignId, words } as WriteOp }] : [],
+      };
     }
     case "apply_recommendation": {
       const ids = (params.ids as number[]) ?? [];
       const recs = await db.select().from(recommendations).where(inArray(recommendations.id, ids));
+      const ops: { platform: Platform; op: WriteOp }[] = [];
+      let paused = 0;
+      let promoted = 0;
+      let bids = 0;
+      let shifted = 0;
       for (const r of recs) {
+        const rp = (r.params ?? {}) as Record<string, unknown>;
         if (r.type === "pause" && r.campaignId) {
           await db.update(campaigns).set({ status: "paused" }).where(eq(campaigns.id, r.campaignId));
+          ops.push({ platform: r.platform as Platform, op: { kind: "campaign_status", campaignIds: [r.campaignId], status: "paused" } as WriteOp });
+          paused++;
         }
         if (r.type === "promote" && r.campaignId) {
           await db.update(campaigns).set({ promotion: "boost7" }).where(eq(campaigns.id, r.campaignId));
+          ops.push({ platform: r.platform as Platform, op: { kind: "promote_listings", campaignIds: [r.campaignId], service: "boost7" } as WriteOp });
+          promoted++;
+        }
+        if (r.type === "bids_up" && r.campaignId) {
+          const kws = await db.select({ id: keywords.id }).from(keywords).where(eq(keywords.campaignId, r.campaignId));
+          const kwIds = kws.map((k) => k.id).slice(0, 60);
+          for (const k of kwIds) {
+            const row = (await db.select().from(keywords).where(eq(keywords.id, k)))[0];
+            if (row) await db.update(keywords).set({ bid: Math.round(row.bid * 1.1 * 10) / 10 }).where(eq(keywords.id, k));
+          }
+          if (kwIds.length) ops.push({ platform: r.platform as Platform, op: { kind: "bids_factor", keywordIds: kwIds, factor: 1.1 } as WriteOp });
+          bids++;
+        }
+        if (r.type === "budget_shift" && rp.from && rp.to) {
+          const from = rp.from as Platform;
+          const to = rp.to as Platform;
+          const percent = Number(rp.percent ?? 15);
+          const fromCamps = await db.select().from(campaigns).where(and(inArray(campaigns.platform, [from]), eq(campaigns.status, "active")));
+          const toCamps = await db.select().from(campaigns).where(and(inArray(campaigns.platform, [to]), eq(campaigns.status, "active")));
+          for (const c of fromCamps) {
+            const nb = Math.max(100, Math.round(c.budgetDaily * (1 - percent / 100)));
+            await db.update(campaigns).set({ budgetDaily: nb }).where(eq(campaigns.id, c.id));
+          }
+          for (const c of toCamps) {
+            const nb = Math.round(c.budgetDaily * (1 + percent / 100));
+            await db.update(campaigns).set({ budgetDaily: nb }).where(eq(campaigns.id, c.id));
+          }
+          if (fromCamps.length) ops.push({ platform: from, op: { kind: "campaign_budget", campaignId: fromCamps[0].id, budgetDaily: Math.max(100, Math.round(fromCamps[0].budgetDaily * (1 - percent / 100))) } as WriteOp });
+          shifted++;
         }
       }
       await db.update(recommendations).set({ status: "applied" }).where(inArray(recommendations.id, ids));
-      return { summary: `применено ${ids.length} рекомендаций (эффекты: пауза/продвижение/ставки)`, platforms: [...new Set(recs.map((r) => r.platform))] };
+      const parts = [
+        paused ? `пауза: ${paused}` : "",
+        promoted ? `продвижение: ${promoted}` : "",
+        bids ? `ставки: ${bids}` : "",
+        shifted ? `бюджет: ${shifted}` : "",
+      ].filter(Boolean);
+      return {
+        summary: `применено ${ids.length} рекомендаций (${parts.join(", ") || "статус обновлён"})`,
+        platforms: [...new Set(recs.map((r) => r.platform))],
+        ops,
+      };
     }
     default:
-      return { summary: `действие ${tool} выполнено`, platforms: [] };
+      return { summary: `действие ${tool} выполнено`, platforms: [], ops: [] };
   }
 }

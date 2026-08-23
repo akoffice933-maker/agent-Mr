@@ -1,9 +1,13 @@
 // Intent router: natural language (RU/EN) → unified tool call.
-// In production this layer is backed by an OpenRouter LLM (tool calling);
-// the demo uses a deterministic rule-based parser so behaviour is reliable.
+// Primary: OpenRouter LLM with tool calling (when OPENROUTER_API_KEY is set).
+// Fallback: deterministic rule-based parser — keeps the agent reliable offline.
 
 import type { Platform } from "./types";
 import { dateNDaysAgo, todayISO } from "@/lib/format";
+import { isLlmConfigured, llmChat, llmModel, type LLMMessage } from "./llm-client";
+import { LLM_TOOLS, KNOWN_TOOLS } from "./tools-schema";
+import { systemPrompt } from "./prompts/system";
+import type { SessionContext } from "./session-context";
 
 export interface ParsedPeriod {
   days: number;
@@ -43,6 +47,7 @@ export const WRITE_TOOLS = new Set([
   "create_campaign",
   "add_negative_keywords",
   "apply_recommendation",
+  "set_campaign_status",
 ]);
 
 const PLATFORM_KEYWORDS: Record<Platform, RegExp> = {
@@ -112,7 +117,7 @@ export function parseIntent(raw: string): ParsedIntent {
   // 2. Apply recommendation(s)
   if (/рекомендац/.test(norm) && /(примен|внедри|выполни|запусти)/.test(norm)) {
     const all = /(все|всё|их)/.test(norm);
-    const mId = norm.match(/(?:рекомедаци[ия]|рекоммендаци[ия]|рекомендаци[ия])\s*#?\s*(\d+)/) ?? norm.match(/#(\d+)/);
+    const mId = norm.match(/(?:рекомедаци[юи]|рекоммендаци[юи]|рекомендаци[юи])\s*#?\s*(\d+)/) ?? norm.match(/#(\d+)/);
     const id = mId ? parseInt(mId[1], 10) : null;
     return { ...base, tool: "apply_recommendation", params: { id, all: all || id === null } };
   }
@@ -127,6 +132,18 @@ export function parseIntent(raw: string): ParsedIntent {
     const m = norm.match(/просмотр[а-я]*\s*(?:ниже|меньше|до)\s*(\d+)/);
     const threshold = m ? parseInt(m[1], 10) : 10;
     return { ...base, tool: "promote_low_view_listings", platforms: ["avito"], params: { threshold } };
+  }
+
+  // 4b. Pause/resume a SPECIFIC campaign by its quoted name (from the original text, case preserved)
+  const rawQuoted: string[] = [];
+  {
+    const re = /[«"„']([^»"“']{2,60})[»"“']/g;
+    let qm: RegExpExecArray | null;
+    while ((qm = re.exec(raw)) !== null) rawQuoted.push(qm[1].trim());
+  }
+  if (rawQuoted.length > 0 && /(пауз|запуск|запусти|включи|выключи|стопни|останов)/.test(norm)) {
+    const status = /(запуск|запусти|включ)/.test(norm) ? "active" : "paused";
+    return { ...base, tool: "set_campaign_status", params: { name: rawQuoted[0], status } };
   }
 
   // 5. Pause low-CTR campaigns
@@ -196,4 +213,115 @@ export function parseIntent(raw: string): ParsedIntent {
   }
 
   return { ...base, tool: "fallback", params: {} };
+}
+
+// ─── LLM-backed intent resolution (ТЗ этап 1) ────────────────────────────────
+
+export interface ResolvedIntent {
+  intent: ParsedIntent;
+  engine: "llm" | "rules";
+  model?: string;
+  llmError?: string;
+}
+
+function clampDays(v: unknown): number {
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) ? Math.min(90, Math.max(1, n)) : 7;
+}
+
+const VALID_PLATFORMS: Platform[] = ["google", "yandex", "avito"];
+
+async function llmResolveIntent(text: string, ctx: SessionContext): Promise<ParsedIntent | null> {
+  const msgs: LLMMessage[] = [{ role: "system", content: systemPrompt(ctx.block) }];
+  for (const m of ctx.history.slice(-8)) {
+    msgs.push({ role: m.role === "user" ? "user" : "assistant", content: m.content.slice(0, 400) });
+  }
+  msgs.push({ role: "user", content: text });
+
+  const resp = await llmChat({ messages: msgs, tools: LLM_TOOLS });
+  const call = resp.toolCalls[0];
+  if (!call) return null; // LLM answered in plain text — let rules decide
+
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(call.function.arguments || "{}");
+  } catch {
+    return null;
+  }
+
+  const tool = call.function.name;
+  if (!KNOWN_TOOLS.has(tool)) return null;
+
+  let platforms: Platform[] = [];
+  if (Array.isArray(args.platforms)) {
+    platforms = (args.platforms as string[]).filter((p): p is Platform => VALID_PLATFORMS.includes(p as Platform));
+  } else if (typeof args.platform === "string" && VALID_PLATFORMS.includes(args.platform as Platform)) {
+    platforms = [args.platform as Platform];
+  }
+
+  const days = clampDays(args.days);
+  const period = { days, from: dateNDaysAgo(days - 1), to: todayISO() };
+  const params: Record<string, unknown> = {};
+
+  switch (tool) {
+    case "pause_low_ctr_campaigns":
+      params.threshold = Number(args.threshold_pct ?? 1);
+      break;
+    case "adjust_bids": {
+      const p = Number(args.percent);
+      params.percent = Number.isFinite(p) && p > 0 ? Math.min(300, p) : 10;
+      params.direction = args.direction === "down" ? "down" : "up";
+      params.filter = args.filter === "with_conversions" ? "with_conversions" : "all";
+      break;
+    }
+    case "set_campaign_status":
+      if (typeof args.campaign_name !== "string" || !args.campaign_name.trim()) return null;
+      params.name = String(args.campaign_name).trim();
+      params.status = args.status === "active" ? "active" : "paused";
+      break;
+    case "promote_low_view_listings":
+      params.threshold = Number(args.min_views_per_day ?? 10);
+      platforms = []; // Avito-only tool
+      break;
+    case "add_negative_keywords":
+      if (!Array.isArray(args.words) || args.words.length === 0) return null;
+      params.words = (args.words as unknown[]).map(String).slice(0, 20);
+      break;
+    case "apply_recommendation":
+      if (typeof args.id === "number") params.id = args.id;
+      else params.all = true;
+      break;
+    case "create_campaign":
+      if (typeof args.name === "string" && args.name.trim()) params.name = args.name.trim();
+      if (typeof args.budget === "number") params.budget = Math.min(500000, Math.max(100, args.budget));
+      break;
+    case "list_campaigns":
+      params.status = ["all", "active", "paused"].includes(args.status as string) ? (args.status as string) : "all";
+      break;
+    case "get_avito_chat_summary":
+      platforms = []; // Avito-only tool
+      break;
+    default:
+      break;
+  }
+
+  return { tool, platforms, period, params };
+}
+
+/**
+ * Resolves the user's intent: LLM tool-calling first (when configured),
+ * deterministic rule parser as a guaranteed fallback.
+ */
+export async function resolveIntent(text: string, ctx: SessionContext): Promise<ResolvedIntent> {
+  if (isLlmConfigured()) {
+    try {
+      const intent = await llmResolveIntent(text, ctx);
+      if (intent) return { intent, engine: "llm", model: llmModel() };
+    } catch (e) {
+      const msg = (e as Error).message;
+      console.error("[router] LLM intent failed, falling back to rules:", msg);
+      return { intent: parseIntent(text), engine: "rules", llmError: msg };
+    }
+  }
+  return { intent: parseIntent(text), engine: "rules" };
 }

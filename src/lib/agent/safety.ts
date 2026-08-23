@@ -66,27 +66,45 @@ export interface BudgetCheck {
   ok: boolean;
   reason?: string;
   spendToday: number;
+  spendWeek: number;
+  spendMonth: number;
   limit: number;
 }
 
-/** Checks whether `additionalDaily` ₽/day of new spend fits the daily limit. */
+function ru(n: number): string {
+  return Math.round(n).toLocaleString("ru-RU");
+}
+
+/** Checks whether `additionalDaily` ₽/day of new spend fits daily, weekly and monthly limits (ТЗ 10). */
 export async function checkBudgetHeadroom(additionalDaily: number): Promise<BudgetCheck> {
   const s = await getSettings();
   const spendToday = await spendSince(1);
+  const spendWeek = await spendSince(7);
+  const spendMonth = await spendSince(30);
+  const base = { spendToday, spendWeek, spendMonth, limit: s.dailyLimit };
   const limit = s.dailyLimit;
   if (spendToday + additionalDaily > limit) {
     return {
+      ...base,
       ok: false,
-      spendToday,
-      limit,
-      reason: `Дневной лимит ${limit.toLocaleString("ru-RU")} ₽ будет превышен: сегодня уже потрачено ${Math.round(
-        spendToday
-      ).toLocaleString("ru-RU")} ₽, новое действие добавляет ещё ~${Math.round(additionalDaily).toLocaleString(
-        "ru-RU"
-      )} ₽/день.`,
+      reason: `Дневной лимит ${ru(limit)} ₽ будет превышен: сегодня уже потрачено ${ru(spendToday)} ₽, новое действие добавляет ещё ~${ru(additionalDaily)} ₽/день.`,
     };
   }
-  return { ok: true, spendToday, limit };
+  if (s.weeklyLimit > 0 && spendWeek + additionalDaily * 7 > s.weeklyLimit) {
+    return {
+      ...base,
+      ok: false,
+      reason: `Недельный лимит ${ru(s.weeklyLimit)} ₽ будет превышен: за 7 дней уже потрачено ${ru(spendWeek)} ₽, новое действие добавляет ~${ru(additionalDaily * 7)} ₽/нед.`,
+    };
+  }
+  if (s.monthlyLimit > 0 && spendMonth + additionalDaily * 30 > s.monthlyLimit) {
+    return {
+      ...base,
+      ok: false,
+      reason: `Месячный лимит ${ru(s.monthlyLimit)} ₽ будет превышен: за 30 дней уже потрачено ${ru(spendMonth)} ₽, новое действие добавляет ~${ru(additionalDaily * 30)} ₽/мес.`,
+    };
+  }
+  return { ...base, ok: true };
 }
 
 export interface AuditEntry {
