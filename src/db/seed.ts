@@ -260,7 +260,7 @@ async function main() {
   console.log("→ Настройки безопасности...");
   await db.insert(settings).values([
     { key: "dry_run", value: true },
-    { key: "read_only", value: false },
+    { key: "read_only", value: true },
     { key: "daily_limit", value: 50000 },
     { key: "weekly_limit", value: 250000 },
     { key: "monthly_limit", value: 900000 },

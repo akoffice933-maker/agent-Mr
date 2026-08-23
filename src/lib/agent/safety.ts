@@ -16,7 +16,7 @@ export interface SafetySettings {
 
 const DEFAULTS: SafetySettings = {
   dryRun: true,
-  readOnly: false,
+  readOnly: true, // read-only by default: the agent can manage accounts only after an explicit opt-in (14-day plan, Day 11)
   dailyLimit: 50000,
   weeklyLimit: 250000,
   monthlyLimit: 900000,

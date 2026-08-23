@@ -126,12 +126,16 @@ export function SettingsPanel() {
         <Toggle
           on={s.readOnly}
           onChange={(v) => {
+            // Disabling read-only = enabling real control over ad accounts — confirm explicitly.
+            if (!v && !window.confirm("Включить управление? Агент сможет выполнять действия (паузы, ставки, бюджеты) после их подтверждения. По умолчанию агент работает в режиме «только чтение».")) return;
             patch({ readOnly: v });
             apiFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ readOnly: v }) });
           }}
-          label="Режим «только чтение»"
-          desc="Для аналитиков и гостей: любые изменения блокируются, чтение и отчёты доступны."
-          danger
+          label={s.readOnly ? "Режим «только чтение» (по умолчанию)" : "⚠ Управление включено"}
+          desc={s.readOnly
+            ? "Агент анализирует и отвечает, но не управляет аккаунтами. Чтобы разрешить действия — выключите этот режим."
+            : "Агент может выполнять действия (паузы, ставки, бюджеты) — каждый раз с вашим подтверждением."}
+          danger={!s.readOnly}
         />
       </Card>
 
