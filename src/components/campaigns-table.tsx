@@ -5,6 +5,7 @@ import { Icon } from "./icons";
 import { PlatformBadge, StatusPill } from "./ui";
 import type { Platform } from "@/lib/agent/types";
 import { fmtMoney, fmtNum, fmtPct } from "@/lib/format";
+import { apiFetch } from "@/lib/api-client";
 
 export interface CampaignUiRow {
   id: number;
@@ -48,7 +49,7 @@ export function CampaignsTable({ rows }: { rows: CampaignUiRow[] }) {
 
   const act = async (row: CampaignUiRow, action: "pause" | "resume" | "promote") => {
     try {
-      const res = await fetch("/api/campaigns/action", {
+      const res = await apiFetch("/api/campaigns/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId: row.id, action }),

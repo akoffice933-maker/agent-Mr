@@ -3,6 +3,14 @@
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
 import { Card } from "./ui";
+import { apiFetch } from "@/lib/api-client";
+
+interface PlatformState {
+  platform: "google" | "yandex" | "avito";
+  mode: "sandbox" | "production";
+  token: boolean;
+  configured: boolean;
+}
 
 interface SettingsState {
   dryRun: boolean;
@@ -11,7 +19,14 @@ interface SettingsState {
   weeklyLimit: number;
   monthlyLimit: number;
   confirmBudget: boolean;
+  platforms?: PlatformState[];
 }
+
+const PLATFORM_NAMES: Record<PlatformState["platform"], string> = {
+  google: "Google Ads",
+  yandex: "Яндекс.Директ",
+  avito: "Авито",
+};
 
 function Toggle({
   on,
@@ -58,7 +73,7 @@ export function SettingsPanel() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch("/api/settings")
+    apiFetch("/api/settings")
       .then((r) => r.json())
       .then(setS)
       .catch(() => undefined);
@@ -69,7 +84,7 @@ export function SettingsPanel() {
   const saveLimits = async () => {
     if (!s) return;
     setBusy(true);
-    await fetch("/api/settings", {
+    await apiFetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dailyLimit: s.dailyLimit, weeklyLimit: s.weeklyLimit, monthlyLimit: s.monthlyLimit }),
@@ -94,7 +109,7 @@ export function SettingsPanel() {
           on={s.dryRun}
           onChange={(v) => {
             patch({ dryRun: v });
-            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dryRun: v }) });
+            apiFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dryRun: v }) });
           }}
           label="Dry-run по умолчанию"
           desc="Все операции записи выполняются как предпросмотр: изменения применяются только после явного подтверждения."
@@ -103,7 +118,7 @@ export function SettingsPanel() {
           on={s.confirmBudget}
           onChange={(v) => {
             patch({ confirmBudget: v });
-            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmBudget: v }) });
+            apiFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmBudget: v }) });
           }}
           label="Подтверждение действий, влияющих на бюджет"
           desc="Обязательное подтверждение до применения ставок, бюджетов и продвижения (требование ТЗ, разд. 10)."
@@ -112,7 +127,7 @@ export function SettingsPanel() {
           on={s.readOnly}
           onChange={(v) => {
             patch({ readOnly: v });
-            fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ readOnly: v }) });
+            apiFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ readOnly: v }) });
           }}
           label="Режим «только чтение»"
           desc="Для аналитиков и гостей: любые изменения блокируются, чтение и отчёты доступны."
@@ -155,6 +170,58 @@ export function SettingsPanel() {
         </button>
         {saved ? <div className="mt-2 text-xs text-good">{saved}</div> : null}
       </Card>
+
+      {s.platforms?.length ? (
+        <Card className="p-4">
+          <h3 className="font-display text-sm font-bold tracking-tight">Площадки и режимы работы</h3>
+          <p className="mt-1 text-[11px] text-fog">
+            sandbox — демо-данные из локального зеркала (без реальных кабинетов); production — реальный API через OAuth-токен.
+          </p>
+          <div className="mt-3 space-y-2">
+            {s.platforms.map((p) => (
+              <div key={p.platform} className="flex items-center gap-3 rounded-lg border border-line bg-panel2 px-3.5 py-2.5">
+                <span className="text-sm font-semibold text-snow">{PLATFORM_NAMES[p.platform]}</span>
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                    p.mode === "production" ? "border-accent/40 bg-accent/15 text-accent" : "border-line text-fog"
+                  }`}
+                >
+                  {p.mode === "production" ? "production" : "sandbox"}
+                </span>
+                <span className="ml-auto text-[11px] text-fog">
+                  {p.mode === "production" && p.token
+                    ? "токен сохранён"
+                    : p.configured
+                      ? "OAuth настроен"
+                      : "ключи в .env не заданы"}
+                </span>
+                {p.mode === "sandbox" && p.configured ? (
+                  <a
+                    href={`/api/oauth/${p.platform}/start`}
+                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-bold text-accent-ink transition-transform hover:-translate-y-px"
+                  >
+                    Подключить
+                  </a>
+                ) : null}
+                {p.mode === "production" ? (
+                  <button
+                    onClick={() =>
+                      apiFetch("/api/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ platform: p.platform, mode: "sandbox" }),
+                      }).then(() => location.reload())
+                    }
+                    className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-fog transition-colors hover:text-snow"
+                  >
+                    В sandbox
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }

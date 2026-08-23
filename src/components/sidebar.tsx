@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
+import { apiFetch } from "@/lib/api-client";
 
 const NAV = [
   { href: "/", label: "Обзор", icon: "grid" },
@@ -20,7 +21,7 @@ function SafetyStatus() {
   useEffect(() => {
     let active = true;
     const load = () =>
-      fetch("/api/settings")
+      apiFetch("/api/settings")
         .then((r) => r.json())
         .then((s) => active && setStatus({ dryRun: !!s.dryRun, readOnly: !!s.readOnly }))
         .catch(() => undefined);

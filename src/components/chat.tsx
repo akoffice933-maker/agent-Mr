@@ -5,6 +5,7 @@ import { Icon } from "./icons";
 import { HBar, PlatformBadge, StatusPill } from "./ui";
 import type { AgentMeta, ChatMessageRow, Platform, ResultPayload } from "@/lib/agent/types";
 import { fmtDate, fmtMoney, fmtNum, fmtPct, fmtTime } from "@/lib/format";
+import { apiFetch } from "@/lib/api-client";
 
 const QUICK = [
   "Покажи расходы по Google, Директу и Авито за последние 7 дней",
@@ -26,7 +27,7 @@ export function Chat() {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/agent/messages")
+    apiFetch("/api/agent/messages")
       .then((r) => r.json())
       .then((d) => {
         setMsgs(d.messages ?? []);
@@ -46,7 +47,7 @@ export function Chat() {
       setInput("");
       setBusy(true);
       try {
-        const res = await fetch("/api/agent/chat", {
+        const res = await apiFetch("/api/agent/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: t }),
@@ -64,7 +65,7 @@ export function Chat() {
 
   const resolve = useCallback(async (id: number, decision: "approve" | "reject") => {
     try {
-      const res = await fetch("/api/agent/action", {
+      const res = await apiFetch("/api/agent/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, decision }),
@@ -78,8 +79,8 @@ export function Chat() {
   }, []);
 
   const clear = useCallback(async () => {
-    await fetch("/api/agent/clear", { method: "POST" });
-    const d = await (await fetch("/api/agent/messages")).json();
+    await apiFetch("/api/agent/clear", { method: "POST" });
+    const d = await (await apiFetch("/api/agent/messages")).json();
     setMsgs(d.messages ?? []);
     setResolved({});
   }, []);

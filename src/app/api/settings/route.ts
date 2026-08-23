@@ -1,16 +1,50 @@
 import { NextResponse } from "next/server";
 import { getSettings, updateSettings, writeAudit } from "@/lib/agent/safety";
+import { accountMode, hasToken, setAccountMode } from "@/lib/adapters/oauth-store";
+import type { Platform } from "@/lib/agent/types";
 
 export const dynamic = "force-dynamic";
 
+/** Whether the OAuth env vars for a platform are configured (start URL available). */
+function platformConfigured(p: Platform): boolean {
+  switch (p) {
+    case "google":
+      return Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_ADS_DEVELOPER_TOKEN);
+    case "yandex":
+      return Boolean(process.env.YANDEX_OAUTH_CLIENT_ID && process.env.YANDEX_OAUTH_CLIENT_SECRET);
+    case "avito":
+      return Boolean(process.env.AVITO_CLIENT_ID && process.env.AVITO_CLIENT_SECRET);
+  }
+}
+
 export async function GET() {
   const s = await getSettings();
-  return NextResponse.json(s);
+  const platforms = (["google", "yandex", "avito"] as Platform[]).map(async (p) => ({
+    platform: p,
+    mode: await accountMode(p),
+    token: await hasToken(p),
+    configured: platformConfigured(p),
+  }));
+  return NextResponse.json({ ...s, platforms: await Promise.all(platforms) });
 }
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    // Switch an account back to sandbox (or production) mode from the UI.
+    if (typeof body.platform === "string" && ["google", "yandex", "avito"].includes(body.platform) && ["sandbox", "production"].includes(body.mode)) {
+      await setAccountMode(body.platform as Platform, body.mode as "sandbox" | "production");
+      await writeAudit({
+        actor: "ui",
+        tool: "set_platform_mode",
+        params: body,
+        platforms: [body.platform],
+        dryRun: false,
+        status: "applied",
+        summary: `Режим площадки ${body.platform}: ${body.mode}`,
+      });
+      return NextResponse.json({ ok: true, platform: body.platform, mode: body.mode });
+    }
     const s = await updateSettings({
       dryRun: typeof body.dryRun === "boolean" ? body.dryRun : undefined,
       readOnly: typeof body.readOnly === "boolean" ? body.readOnly : undefined,

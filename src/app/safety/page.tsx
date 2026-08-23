@@ -16,11 +16,25 @@ const POLICIES = [
   { icon: "layers", title: "Песочницы платформ", text: "Демо-кабинеты подключены в режиме sandbox — реальные рекламные бюджеты не затрагиваются." },
 ];
 
-export default async function SafetyPage() {
+export default async function SafetyPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const accs = await db.select().from(accounts);
+  const sp = await searchParams;
+  const oauthOk = sp.oauth === "ok" ? String(sp.platform ?? "") : null;
+  const oauthErr = sp.oauth === "error" ? String(sp.platform ?? "") : null;
 
   return (
     <div className="rise-in">
+      {oauthOk ? (
+        <div className="mb-4 rounded-xl border border-good/40 bg-good/10 px-4 py-3 text-sm text-good">
+          ✓ {oauthOk === "avito" ? "Авито" : oauthOk === "google" ? "Google Ads" : "Яндекс.Директ"} подключён: режим production, адаптер работает с реальным API.
+        </div>
+      ) : null}
+      {oauthErr ? (
+        <div className="mb-4 rounded-xl border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad">
+          ✗ Ошибка подключения {oauthErr === "avito" ? "Авито" : oauthErr === "google" ? "Google Ads" : "Яндекс.Директ"} — проверьте OAuth-ключи в .env и повторите.
+        </div>
+      ) : null}
+
       <SectionTitle
         title="Безопасность"
         sub="Единый safety-слой для всех трёх платформ: защищает от случайных трат и даёт полную трассируемость действий"
