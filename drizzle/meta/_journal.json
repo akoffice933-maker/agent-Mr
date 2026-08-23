@@ -36,6 +36,13 @@
       "when": 1787522218577,
       "tag": "0004_tenant_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787524585791,
+      "tag": "0005_api_key_lifecycle",
+      "breakpoints": true
     }
   ]
 }

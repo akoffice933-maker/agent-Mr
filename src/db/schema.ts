@@ -187,10 +187,12 @@ export const apiKeys = pgTable("api_keys", {
     .notNull()
     .references(() => organizations.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  keyHash: text("key_hash").notNull(), // sha256 hex of the key
-  keyPrefix: text("key_prefix").notNull(), // first 8 chars, for display
+  keyHash: text("key_hash").notNull(), // sha256 hex of the key — raw key is never stored
+  keyPrefix: text("key_prefix").notNull(), // first 8 chars, for display/revoke
   createdAt: timestamp("created_at").notNull().defaultNow(),
   lastUsedAt: timestamp("last_used_at"),
+  expiresAt: timestamp("expires_at"), // null = no expiration
+  revokedAt: timestamp("revoked_at"), // null = active
 });
 
 // ── OAuth tokens for real platform integrations (encrypted at rest) ────────

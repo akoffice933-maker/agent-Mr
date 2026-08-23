@@ -82,7 +82,12 @@ async function resolveKeyTenant(key: string): Promise<TenantHeaders | null> {
     return { "x-tenant-org-id": "1", "x-tenant-user-id": null, "x-tenant-role": "admin" };
   }
   const hash = createHash("sha256").update(key).digest("hex");
-  const r = await rawDbPool.query("SELECT org_id FROM api_keys WHERE key_hash = $1 LIMIT 1", [hash]);
+  // Only active (non-revoked, non-expired) keys resolve; raw key is never
+  // matched or stored — only its sha256 hash.
+  const r = await rawDbPool.query(
+    "SELECT org_id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) LIMIT 1",
+    [hash]
+  );
   const row = (r as { rows: { org_id: number }[] }).rows[0];
   if (!row) return null;
   await rawDbPool.query("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1", [hash]);

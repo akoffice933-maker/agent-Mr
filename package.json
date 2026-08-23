@@ -11,7 +11,9 @@
     "migrate": "drizzle-kit migrate",
     "seed": "tsx src/db/seed.ts",
     "create-user": "tsx src/db/create-user.ts",
-    "create-api-key": "tsx src/db/create-api-key.ts"
+    "audit:rls": "tsx scripts/rls-audit.ts",
+    "test:integration": "vitest run",
+    "api-keys": "tsx src/db/api-keys.ts"
   },
   "dependencies": {
     "dotenv": "17.3.1",

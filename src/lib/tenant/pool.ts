@@ -18,7 +18,9 @@ import { AsyncLocalStorage } from "async_hooks";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 
-const databaseUrl = process.env.DATABASE_URL;
+// Test hook: integration tests run against DATABASE_TEST_URL (the plain
+// DATABASE_URL in unit tests is a dummy for module loading only).
+const databaseUrl = process.env.DATABASE_TEST_URL || process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
 }
@@ -33,6 +35,7 @@ export interface TenantContext {
 
 interface Store extends TenantContext {
   __client: PoolClientLike;
+  __queue: Promise<unknown>;
 }
 
 // Minimal structural type so we don't import pg's PoolClient here.
@@ -59,8 +62,17 @@ const tenantPool: Pool = new Proxy(rawPool, {
     const value = (target as unknown as Record<string | symbol, unknown>)[prop];
     if (prop === "query") {
       return function proxiedQuery(a: unknown, b?: unknown) {
-        const c = contextClient();
-        if (c) return (c as unknown as { query: (...x: unknown[]) => Promise<unknown> }).query(a, b);
+        const store = als.getStore();
+        if (store) {
+          // Serialize: one pinned connection per request — concurrent drizzle
+          // calls (Promise.all in a route) must not interleave on it.
+          const prev = store.__queue;
+          const next = prev.then(() =>
+            (store.__client as unknown as { query: (...x: unknown[]) => Promise<unknown> }).query(a, b)
+          );
+          store.__queue = next.catch(() => undefined);
+          return next;
+        }
         return (target as unknown as { query: (...x: unknown[]) => Promise<unknown> }).query(a, b);
       };
     }
@@ -79,21 +91,40 @@ export const db = drizzle(tenantPool);
 export const rawDbPool = rawPool; // for identity-plane queries (no RLS concern)
 
 /**
- * Run `fn` inside a tenant: pins one connection, sets app.org_id, and routes
- * all drizzle queries of the request to it. Always releases + resets on exit.
+ * Run `fn` inside a tenant: pins ONE connection, opens a transaction, and
+ * binds the tenant context with `SET LOCAL app.org_id` (transaction-scoped).
+ *
+ * Why transaction-scoped (not session-level set_config):
+ *   - the context is impossible to leave behind: it vanishes with COMMIT/
+ *     ROLLBACK, so a pooled connection is clean by construction;
+ *   - a raw `set_config` misuse outside this function can at worst shadow
+ *     the value inside no transaction — app queries always run inside one.
+ *
+ * All drizzle queries of the request are routed to this connection (proxy),
+ * so they execute inside the tenant transaction.
  */
 export async function withTenant<T>(ctx: TenantContext, fn: (ctx: TenantContext) => Promise<T>): Promise<T> {
-  const client = (await rawPool.connect()) as PoolClientLike;
+  const client = (await rawPool.connect()) as unknown as {
+    query: (sql: string, values?: unknown[]) => Promise<unknown>;
+    release: () => void;
+  };
   try {
-    await client.query("SELECT set_config('app.org_id', $1, false)", [String(ctx.orgId)]);
-    const store: Store = { orgId: ctx.orgId, userId: ctx.userId, role: ctx.role, __client: client };
-    return await als.run(store, () => fn(ctx));
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.org_id', $1, true)", [String(ctx.orgId)]);
+    const store: Store = {
+      orgId: ctx.orgId,
+      userId: ctx.userId,
+      role: ctx.role,
+      __client: client as PoolClientLike,
+      __queue: Promise.resolve(),
+    };
+    const result = await als.run(store, () => fn(ctx));
+    await client.query("COMMIT");
+    return result;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw e;
   } finally {
-    try {
-      await client.query("SELECT set_config('app.org_id', '', false)");
-    } catch {
-      /* connection already broken */
-    }
     client.release();
   }
 }
