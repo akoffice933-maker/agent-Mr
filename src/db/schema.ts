@@ -13,6 +13,7 @@ import {
 
 // ── Accounts ────────────────────────────────────────────────────────────────
 export const accounts = pgTable("accounts", {
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   id: serial("id").primaryKey(),
   platform: text("platform").notNull(), // google | yandex | avito
   name: text("name").notNull(),
@@ -25,6 +26,7 @@ export const campaigns = pgTable(
   "campaigns",
   {
     id: serial("id").primaryKey(),
+    organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
     accountId: integer("account_id").references(() => accounts.id),
     platform: text("platform").notNull(),
     kind: text("kind").notNull().default("campaign"), // campaign | listing
@@ -100,6 +102,7 @@ export const chats = pgTable("avito_chats", {
 // ── Audit log ──────────────────────────────────────────────────────────────
 export const auditLog = pgTable("audit_log", {
   id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   ts: timestamp("ts").notNull().defaultNow(),
   actor: text("actor").notNull().default("chat"), // chat | ui | system
   tool: text("tool").notNull(),
@@ -113,6 +116,7 @@ export const auditLog = pgTable("audit_log", {
 // ── Pending actions (safety confirmations) ─────────────────────────────────
 export const pendingActions = pgTable("pending_actions", {
   id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   tool: text("tool").notNull(),
   params: jsonb("params"),
@@ -152,11 +156,49 @@ export const sessions = pgTable(
   (t) => [index("sessions_user_idx").on(t.userId)]
 );
 
+// ── Multi-tenancy (Phase C) ───────────────────────────────────────────────
+export const organizations = pgTable("organizations", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const orgMembers = pgTable(
+  "org_members",
+  {
+    id: serial("id").primaryKey(),
+    orgId: integer("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // owner | admin | media_buyer | analyst | viewer (Phase D enforces the matrix)
+    role: text("role").notNull().default("member"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("org_members_unique_idx").on(t.orgId, t.userId)]
+);
+
+// Org-scoped machine API keys (MCP / Telegram / scripts).
+export const apiKeys = pgTable("api_keys", {
+  id: serial("id").primaryKey(),
+  orgId: integer("org_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  keyHash: text("key_hash").notNull(), // sha256 hex of the key
+  keyPrefix: text("key_prefix").notNull(), // first 8 chars, for display
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at"),
+});
+
 // ── OAuth tokens for real platform integrations (encrypted at rest) ────────
 export const oauthTokens = pgTable(
   "oauth_tokens",
   {
     id: serial("id").primaryKey(),
+    organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
     platform: text("platform").notNull(), // google | yandex | avito
     accessToken: text("access_token").notNull(), // AES-256-GCM ciphertext
     refreshToken: text("refresh_token"), // AES-256-GCM ciphertext
@@ -172,15 +214,17 @@ export const settings = pgTable(
   "settings",
   {
     id: serial("id").primaryKey(),
+    organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
     key: text("key").notNull(),
     value: jsonb("value"),
   },
-  (t) => [uniqueIndex("settings_key_idx").on(t.key)]
+  (t) => [uniqueIndex("settings_org_key_idx").on(t.organizationId, t.key)]
 );
 
 // ── Recommendations ────────────────────────────────────────────────────────
 export const recommendations = pgTable("recommendations", {
   id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   platform: text("platform").notNull(),
   campaignId: integer("campaign_id").references(() => campaigns.id),
     type: text("type").notNull(),
@@ -194,6 +238,7 @@ export const recommendations = pgTable("recommendations", {
 // ── Chat messages ──────────────────────────────────────────────────────────
 export const messages = pgTable("chat_messages", {
   id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   role: text("role").notNull(), // user | agent
   content: text("content").notNull().default(""),
   meta: jsonb("meta"),
