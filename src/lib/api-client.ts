@@ -1,18 +1,12 @@
-// Client-side fetch wrapper: attaches the optional agent API key (stored in
-// localStorage via the "API key" field in Settings) when the server enforces one.
-
-export function getStoredApiKey(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem("agent_api_key");
-}
-
-export function setStoredApiKey(key: string): void {
-  window.localStorage.setItem("agent_api_key", key.trim());
-}
+// Client-side fetch wrapper (Phase B): the browser authenticates via the
+// HttpOnly session cookie set at login — NO credentials in JS, NO localStorage.
+// Mutating requests carry X-Agent-Csrf (checked by the proxy for session auth).
 
 export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
-  const key = getStoredApiKey();
-  if (key) headers.set("x-api-key", key);
-  return fetch(url, { ...init, headers });
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    headers.set("X-Agent-Csrf", "1");
+  }
+  return fetch(url, { ...init, headers, credentials: "same-origin" });
 }

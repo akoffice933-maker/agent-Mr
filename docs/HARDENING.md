@@ -6,6 +6,36 @@
 Критерий «production-ready»: системе можно доверить рекламные бюджеты первого
 реального клиента без риска неконтролируемых действий.
 
+## Архитектурные правила (не нарушать)
+
+**R1. LLM не имеет права принимать security decisions.**
+LLM может решить: «я хочу изменить bid на 15%» (structured intent).
+LLM никогда не решает: «это безопасно, можно выполнять». Решение о допуске
+принимает только код — Policy Engine (`src/lib/agent/policy.ts`). Это правило
+проверяется на ревью: любой путь, где ответ LLM напрямую управляет исполнением
+без `evaluatePolicy()`, — дефект.
+
+**R2. Разделение уровней (не смешивать authentication и authorization).**
+
+```
+Authentication    «кто ты?»             session cookie / x-api-key
+     ↓
+Tenant resolution «какая организация?»  (Фаза C: organization_id)
+     ↓
+Authorization     «имеешь ли право?»    (Фаза D: RBAC + ownership)
+     ↓
+Policy            «разрешено ли действие?» (policy.ts: allow / approval / block)
+     ↓
+Execution         «можно ли выполнить сейчас?» (adapters, re-check policy)
+```
+
+**R3. Re-check перед execution.** Состояние может измениться между approval и
+execution (другой оператор, исчерпанный лимит) — политика оценивается повторно
+непосредственно перед применением (`resolvePending` → `evaluatePolicy` again).
+
+**R4. Credentials не живут в браузере.** Только HttpOnly/SameSite=Strict cookie
+с session id. Никаких ключей и паролей в localStorage / JS-бандле.
+
 ## Фаза A — обязательный периметр (выполняется первой)
 
 | # | Задача | Статус |
@@ -16,18 +46,38 @@
 | A4 | **Idempotency** действий: повторный approve/reject того же pending-действия безопасен (проверка статуса, «уже обработано»). Явная Idempotency-Key шапка — фаза B. | ✅ (существующая механика `pending_actions.status`) |
 | A5 | **Observability-база**: `/api/health` возвращает db, mode, auth, uptime. Структурные логи — фаза B. | ✅ |
 
-## Фаза B — session-аутентификация (вытесняет localStorage)
+## Фаза B — session-аутентификация ✅ (выполнена)
 
-Сегодня web-UI хранит API-ключ в `localStorage` — уязвимо к XSS (ключ → действия
-с бюджетами). План:
+Задача: убрать credentials из браузера (XSS → ключ → действия с бюджетами) и
+заложить identity (`User └── Sessions`) под multi-tenancy.
 
-1. **HttpOnly Secure SameSite=Strict cookie** + server-side session (в БД или в Redis):
-   - `POST /api/auth/login` (email + пароль / passkey) → session cookie
-   - `POST /api/auth/logout`
-   - session в `sessions` (id, user_id, expires_at, ip, ua), TTL 12ч, sliding
-2. **CSRF**: SameSite cookie + `X-Requested-With`/custom header проверка на mутации
-3. REST-клиенты (MCP/Telegram) остаются на `x-api-key` — это machine-to-machine
-4. Удаляем `agent_api_key` из localStorage; UI ходит под сессией
+Реализация:
+
+1. **Схема**: `users` (email, scrypt-хеш, `role` — заготовка под Фазу D) +
+   `sessions` (id, user_id FK cascade, ip, ua, 12h sliding expiry, revoked_at).
+   Миграция `0002_users_sessions`.
+2. **Login**: `POST /api/auth/login` → HttpOnly **Secure** SameSite=Strict cookie
+   `agentmr_sid` (Secure включается автоматически при `PUBLIC_URL=https://…`).
+   Ротация: каждый login — новый session id; sliding-expiry на активность.
+   Timing-equalized verify: dummy scrypt при неизвестном email (не раскрывает
+   существование учётки по времени ответа).
+3. **CSRF**: SameSite=Strict + обязательный заголовок `X-Agent-Csrf` на mутациях
+   с session-auth (проверяется прокси; machine-клиенты на `x-api-key` не
+   зависят от CSRF — у них нет cookie).
+4. **Brute-force**: 10 login/min на IP (прокси) + lockout 5 неудач → 15 минут
+   (in-memory; при multi-instance — в общий стор).
+5. **Logout/revocation**: `POST /api/auth/logout` (revoke), `revokeAllForUser`
+   (доступно для смены пароля / админ-действия).
+6. **Машиные клиенты**: MCP/Telegram — без изменений, `x-api-key` (M2M).
+   Идентификация MCP-вызовов до уровня организации — Фаза C.
+7. **Режимы**: `AGENT_AUTH_MODE=off` (дефолт: sandbox/dev без трения) / `on`
+   (SaaS). Fail-closed сохранён: auth-on + нет `AGENT_API_KEY` + нет users → 503.
+8. **UI**: страница `/login`, AuthGuard (редирект `/login?next=…`), UserMenu в
+   сайдбаре (email + logout). `localStorage` в клиенте больше не используется.
+9. **CLI**: `npm run create-user -- <email> <password> [name]`.
+10. **E2E-покрыто**: 503 без users; 401 неверный пароль; 200 + cookie;
+    403 мутация без CSRF; 401 без сессии; machine-key 200/401; logout → replay
+    сессии 401; lockout 429 после 5 неудач; UI-логин с редиректом на next.
 
 ## Фаза C — Multi-tenancy
 

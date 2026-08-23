@@ -122,6 +122,36 @@ export const pendingActions = pgTable("pending_actions", {
   source: text("source").notNull().default("chat"),
 });
 
+// ── Users (Phase B: identity foundation for multi-tenancy) ─────────────────
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull(),
+  passwordHash: text("password_hash").notNull(), // scrypt$N$r$p$salt$hash
+  name: text("name"),
+  // Phase D roles (default admin for now): owner | admin | media_buyer | analyst | viewer
+  role: text("role").notNull().default("admin"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ── Sessions (server-side; HttpOnly cookie carries only the session id) ────
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(), // 32-byte random hex
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    userAgent: text("user_agent"),
+    ip: text("ip"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId)]
+);
+
 // ── OAuth tokens for real platform integrations (encrypted at rest) ────────
 export const oauthTokens = pgTable(
   "oauth_tokens",

@@ -15,6 +15,13 @@
       "when": 1787509503563,
       "tag": "0001_oauth_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787521016802,
+      "tag": "0002_users_sessions",
+      "breakpoints": true
     }
   ]
 }

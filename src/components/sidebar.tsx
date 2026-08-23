@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
 import { apiFetch } from "@/lib/api-client";
+import { getAuth, subscribeAuth } from "./auth-guard";
 
 const NAV = [
   { href: "/", label: "Обзор", icon: "grid" },
@@ -69,8 +70,46 @@ function SafetyStatus() {
   );
 }
 
+function UserMenu() {
+  const [auth, setAuth] = useState(getAuth());
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => subscribeAuth(() => setAuth(getAuth())), []);
+
+  if (auth.authMode !== "on" || !auth.user) return null;
+
+  const logout = async () => {
+    setBusy(true);
+    await apiFetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  };
+
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-line bg-panel2 p-2.5">
+      <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent/15 text-xs font-bold text-accent">
+        {(auth.user.name ?? auth.user.email).slice(0, 1).toUpperCase()}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[11px] font-semibold text-snow">{auth.user.name ?? auth.user.email}</div>
+        <div className="truncate text-[10px] text-fog">{auth.user.email}</div>
+      </div>
+      <button
+        onClick={logout}
+        disabled={busy}
+        title="Выйти"
+        className="rounded-md p-1.5 text-fog transition-colors hover:bg-panel3 hover:text-snow disabled:opacity-50"
+      >
+        <Icon name="lock" className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const pathname = usePathname();
+
+  // The login screen renders standalone (no app chrome).
+  if (pathname === "/login") return null;
 
   return (
     <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r border-line bg-panel lg:flex">
@@ -108,6 +147,7 @@ export function Sidebar() {
       </nav>
 
       <div className="space-y-3 px-4 pb-5">
+        <UserMenu />
         <SafetyStatus />
         <div className="px-1 text-[10px] leading-relaxed text-fog">
           Адаптеры: Google Ads API · Direct API v5 · Avito Business API · AI Core: OpenRouter (fallback: rule-based)

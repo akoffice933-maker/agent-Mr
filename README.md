@@ -103,6 +103,8 @@ Google Ads и Авито: адаптеры готовы, остаются в san
 ```
 Пользователь (веб / Telegram / MCP)
         ↓
+Authentication: session cookie (HttpOnly) | x-api-key   →  Tenant → RBAC (Phases C/D)
+        ↓
 AI Core: LLM tool calling (OpenRouter) → rule-based fallback
         ↓  structured intent: {tool, platforms, params}
 Policy Engine:  read? → allow  |  read-only? → block  |  лимиты? → block
@@ -117,6 +119,9 @@ Adapters: production (реальный API) | sandbox (зеркало)
         ↓
 PostgreSQL: audit_log · pending_actions · oauth_tokens (AES-256-GCM)
 ```
+
+> **Р1.** LLM никогда не принимает security decisions — только Policy Engine (код).
+> **Р4.** Credentials не живут в браузере: только HttpOnly cookie.
 
 API-защита: в production-режиме без `AGENT_API_KEY` REST API **недоступен**
 (fail-closed, 503); rate limiting 120 read/20 write req/min на IP.
@@ -186,8 +191,10 @@ docker compose --profile clients up --build     # + telegram-bot + mcp-server
 | `ENCRYPTION_KEY` | да* | Ключ AES-256-GCM для шифрования OAuth-токенов в БД (*обязательна при подключении площадок) |
 | `OPENROUTER_API_KEY` | нет | LLM-ядро; без ключа — rule-based парсер |
 | `OPENROUTER_MODEL` | нет | Модель по умолчанию: `openai/gpt-4o-mini` |
-| `AGENT_API_KEY` | нет | API-ключ REST API (заголовок `x-api-key`); пусто = без защиты |
-| `PUBLIC_URL` | нет | Публичный URL для OAuth redirect-uri |
+| `AGENT_API_KEY` | prod* | API-ключ для машиных клиентов (MCP/Telegram), заголовок `x-api-key` |
+| `AGENT_AUTH_MODE` | нет | `off` (дефолт, dev/sandbox) / `on` (SaaS: login по сессии) |
+| `AGENT_MODE` | нет | `production` включает fail-closed и обязательную аутентификацию |
+| `PUBLIC_URL` | нет | Публичный URL для OAuth redirect-uri (https включает Secure cookie) |
 | `GOOGLE_OAUTH_CLIENT_ID/SECRET`, `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CUSTOMER_ID` | prod | Google Ads (этап 3) |
 | `YANDEX_OAUTH_CLIENT_ID/SECRET` | prod | Яндекс.Директ (этап 4) |
 | `AVITO_CLIENT_ID/SECRET`, `AVITO_USER_ID` | prod | Авито Business API (этап 5) |
@@ -223,10 +230,20 @@ docker compose --profile clients up --build     # + telegram-bot + mcp-server
 | POST | `/api/campaigns/action` | Пауза/запуск/продвижение из UI |
 | GET/POST | `/api/settings` | Safety-настройки; `{platform, mode}` — режим площадки |
 | GET | `/api/oauth/{google,yandex,avito}?start=1` | Запуск OAuth; callback с `?code=&state=` |
-| GET | `/api/health` | Healthcheck |
+| POST | `/api/auth/login` | `{email, password}` → session cookie (HttpOnly) |
+| POST | `/api/auth/logout` | Revocation сессии + очистка cookie |
+| GET | `/api/auth/me` | Текущий пользователь / 401 |
+| GET | `/api/health` | Healthcheck: db, mode, auth, uptime |
 
-Аутентификация: при заданном `AGENT_API_KEY` все маршруты (кроме `/api/health` и OAuth)
-требуют заголовок `x-api-key`. Веб-UI хранит ключ в localStorage (поле в настройках).
+Аутентификация (Phase B, см. `docs/HARDENING.md`):
+
+- **Браузер**: login → server-side session в HttpOnly Secure SameSite=Strict cookie.
+  В браузере нет credentials (ни в JS, ни в localStorage). CSRF — заголовок `X-Agent-Csrf`
+  на mутациях. Brute-force: 10 login/min + lockout 5 неудач/15 мин.
+- **Машиные клиенты** (MCP/Telegram/скрипты): заголовок `x-api-key`.
+- **Режимы**: `AGENT_AUTH_MODE=off` (дефолт, sandbox/dev) / `on` (SaaS).
+  Fail-closed: production + нет ключа + нет users → 503.
+- Создание пользователя: `npm run create-user -- <email> <password> [name]`.
 
 ## MCP-сервер (этап 7)
 
@@ -269,7 +286,7 @@ Long polling — публичный URL не требуется.
 
 ```bash
 npm run typecheck   # TypeScript
-npm run test        # vitest: rule-парсер, advisor, crypto, format (31 тест)
+npm run test        # vitest: rule-парсер, policy engine, advisor, crypto, auth, format (44 теста)
 cd mcp-server && npm run selftest   # MCP против работающего приложения
 cd telegram-bot && npm run selftest # форматирование ответов
 ```

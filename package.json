@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "migrate": "drizzle-kit migrate",
-    "seed": "tsx src/db/seed.ts"
+    "seed": "tsx src/db/seed.ts",
+    "create-user": "tsx src/db/create-user.ts"
   },
   "dependencies": {
     "dotenv": "17.3.1",
