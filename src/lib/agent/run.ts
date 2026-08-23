@@ -14,7 +14,8 @@ import {
 import { fmtMoney } from "@/lib/format";
 import { resolveIntent, WRITE_TOOLS } from "./router";
 import type { ParsedIntent } from "./router";
-import { checkBudgetHeadroom, getSettings, writeAudit } from "./safety";
+import { getSettings, writeAudit } from "./safety";
+import { evaluatePolicy } from "./policy";
 import type { SafetySettings } from "./safety";
 import * as tools from "./tools";
 import type { AgentMeta, ChatMessageRow, Platform, ResultPayload, TraceStep } from "./types";
@@ -117,49 +118,41 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
   let auditSummary = "";
   let pendingId: number | undefined;
 
-  if (isWrite && settings.readOnly) {
-    trace.push({ label: "Safety-слой: режим «только чтение»", detail: "Операции записи запрещены политикой", status: "block" });
-    result = {
-      kind: "text",
-      text: "Действие заблокировано: включён режим «только чтение» для аналитических пользователей. Отключите его на странице «Безопасность», чтобы вносить изменения.",
-    };
+  // Policy Engine — pre-dispatch decision (the LLM never executes anything directly).
+  const prePolicy = await evaluatePolicy({ tool: intent.tool, isWrite, settings });
+
+  if (prePolicy.action === "block") {
+    trace.push({ label: "Policy Engine: действие заблокировано", detail: prePolicy.reason, status: "block" });
+    result = { kind: "text", text: prePolicy.reason };
     auditStatus = "blocked";
-    auditSummary = `Блокировка ${intent.tool}: режим только чтение`;
+    auditSummary = `Блокировка ${intent.tool}: политика безопасности`;
   } else {
     const out = await dispatch(intent.tool, intent, settings);
     result = out.result;
     auditSummary = out.auditSummary;
 
     if (out.pending) {
-      // Safety checks before execution
-      trace.push({
-        label: settings.dryRun
-          ? "Safety-слой: dry-run включён → подготовлен предпросмотр"
-          : "Safety-слой: требуется подтверждение (влияет на бюджет)",
-        detail: "Изменения не применяются без явного подтверждения",
-        status: "warn",
-      });
-
+      // Policy Engine — full decision including the action's added daily cost.
       const costDaily = out.pending.costDaily ?? 0;
-      if (costDaily > 0) {
-        const check = await checkBudgetHeadroom(costDaily);
-        if (!check.ok) {
-          trace.push({ label: "Safety-слой: превышен лимит расхода", detail: check.reason, status: "block" });
-          result = {
-            ...(result as Extract<ResultPayload, { kind: "preview" }>),
-            verdict: "blocked",
-            reason: check.reason,
-          };
-          auditStatus = "blocked";
-        } else {
-          trace.push({
-            label: `Лимиты: запас есть (сегодня ${fmtMoney(check.spendToday)} из ${fmtMoney(check.limit)}; неделя ${fmtMoney(check.spendWeek)}; месяц ${fmtMoney(check.spendMonth)})`,
-            status: "ok",
-          });
-        }
-      }
+      const policy = await evaluatePolicy({ tool: intent.tool, isWrite: true, settings, costDaily });
 
-      if (auditStatus !== "blocked") {
+      if (policy.action === "block") {
+        trace.push({ label: "Policy Engine: превышен лимит расхода", detail: policy.reason, status: "block" });
+        result = {
+          ...(result as Extract<ResultPayload, { kind: "preview" }>),
+          verdict: "blocked",
+          reason: policy.reason,
+        };
+        auditStatus = "blocked";
+      } else {
+        trace.push({
+          label: `Policy Engine: ${policy.note ?? "требуется подтверждение"}`,
+          detail: "Изменения не применяются без явного подтверждения",
+          status: "warn",
+        });
+        if (costDaily > 0) {
+          trace.push({ label: "Policy Engine: лимиты расхода (день/неделя/месяц) — запас есть", status: "ok" });
+        }
         const pending = (
           await db
             .insert(pendingActions)
@@ -323,14 +316,13 @@ export async function resolvePending(id: number, decision: "approve" | "reject",
     });
   }
 
-  // Re-check budget policy at approval time: limits may have been exhausted since the preview.
+  // Policy Engine re-check at approval time: limits may have been exhausted since the preview.
   const costDaily = Number(pending.costDaily ?? 0);
-  if (costDaily > 0) {
-    const check = await checkBudgetHeadroom(costDaily);
-    if (!check.ok) {
-      await db.update(pendingActions).set({ status: "rejected" }).where(eq(pendingActions.id, id));
-      await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "blocked", summary: `Отклонено при подтверждении #${id}: ${check.reason}` });
-      return insertAgentMessage(`Не применил действие #${id}: ${check.reason}`, {
+  const approvalPolicy = await evaluatePolicy({ tool: pending.tool, isWrite: true, settings: await getSettings(), costDaily });
+  if (approvalPolicy.action === "block") {
+    await db.update(pendingActions).set({ status: "rejected" }).where(eq(pendingActions.id, id));
+    await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "blocked", summary: `Отклонено при подтверждении #${id}: ${approvalPolicy.reason}` });
+    return insertAgentMessage(`Не применил действие #${id}: ${approvalPolicy.reason}`, {
         tool: "apply_pending",
         toolLabel: pending.tool,
         platforms: [],
@@ -339,9 +331,8 @@ export async function resolvePending(id: number, decision: "approve" | "reject",
           { label: "Действие отклонено, изменения не применялись", status: "block" },
         ],
         durationMs: 120,
-        result: { kind: "text", text: `Действие отклонено: ${check.reason}` },
+        result: { kind: "text", text: `Действие отклонено: ${approvalPolicy.reason}` },
       });
-    }
   }
 
   const params = (pending.params ?? {}) as Record<string, unknown>;

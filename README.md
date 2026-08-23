@@ -1,10 +1,34 @@
-# agent-Mr — Unified AI Ads Agent
+# agent-Mr — AI Advertising Operating System
 
-Единый AI-агент, управляющий рекламой одновременно в **Google Ads**, **Яндекс.Директе** и на **Авито**:
-чат на естественном языке (RU/EN), общая система безопасности (dry-run, лимиты, подтверждения, audit-log)
-и сквозная отчётность по трём площадкам.
+**Единый AI-агент, управляющий рекламой в Google Ads, Яндекс.Директе и на Авито:
+один чат, один safety-слой, одна отчётность.**
 
-Полное техническое задание: [`docs/TZ.md`](docs/TZ.md) (v2.0).
+> **EN pitch.** agent-Mr is an AI advertising operations platform: one agent
+> manages campaigns, bids and promotion across Google Ads, Yandex Direct and
+> Avito through natural language (RU/EN). Every budget-affecting action goes
+> through a deterministic policy engine — read-only by default, dry-run preview,
+> spend limits, human approval, full audit log. Three clients of one REST API:
+> web UI, Telegram bot and an MCP server (Advertising Control Plane for AI agents).
+> **Production status: Yandex Direct — production integration ready (OAuth + API v5 + Metrica);
+> Google Ads & Avito — adapters in sandbox.**
+
+**Problem.** Маркетолог ведёт 3 кабинета: три интерфейса, три отчёта, три риска
+случайной траты. AI-агенты умеют «говорить про рекламу», но доверять им бюджеты
+нельзя — нет guardrails, confirmations и audit.
+
+**Solution.** Execution layer, которому можно доверять: LLM формирует structured
+intent → **Policy Engine** решает допуск (read-only по умолчанию, лимиты дня/недели/месяца) →
+dry-run предпросмотр → **человек подтверждает** → повторная проверка лимитов →
+выполнение → audit-log. LLM никогда не трогает рекламные API напрямую.
+
+| | |
+|---|---|
+| 🎬 **Демо** | [Живой интерактивный чат (RU/EN)](https://akoffice933-maker.github.io/agent-Mr/) · [видео: аудит + управление](demo/assets/demo-audit.mp4) · [видео: кросс-отчёт](demo/assets/demo-report.mp4) |
+| 🛡 **Безопасность** | read-only by default · dry-run · лимиты · approval · re-check · encrypted tokens · fail-closed API auth · rate limiting |
+| 📡 **Клиенты** | Web UI · Telegram-бот (`/report` `/audit` `/pending`) · MCP-сервер (6 tools) — один REST API |
+| 🏭 **Production** | Яндекс.Директ: готов (OAuth, API v5, Метрика) · Google Ads: sandbox · Авито: sandbox |
+
+Полное техническое задание: [`docs/TZ.md`](docs/TZ.md) (v2.1) · Production Hardening план: [`docs/HARDENING.md`](docs/HARDENING.md) · Гайд подключения Директа: [`docs/YANDEX_SETUP.md`](docs/YANDEX_SETUP.md)
 
 ## Как начать за 10 минут
 
@@ -73,6 +97,29 @@ Google Ads и Авито: адаптеры готовы, остаются в san
 | День 12 | Telegram: отчёты, аудит, pending-действия | ✅ `/report`, `/audit`, `/pending` + кнопки |
 | День 13 | Демо-видео | ✅ 2 mp4 в `demo/assets/` |
 | День 14 | README «Как начать» | ✅ (этот раздел) |
+
+## Модель безопасности (pipeline)
+
+```
+Пользователь (веб / Telegram / MCP)
+        ↓
+AI Core: LLM tool calling (OpenRouter) → rule-based fallback
+        ↓  structured intent: {tool, platforms, params}
+Policy Engine:  read? → allow  |  read-only? → block  |  лимиты? → block
+        ↓  require_approval
+Safety Layer: dry-run предпросмотр (before/after + стоимость)
+        ↓
+Подтверждение человека (кнопки / инлайн-кнопки)
+        ↓
+Policy Engine re-check (лимиты могли исчерпаться)
+        ↓
+Adapters: production (реальный API) | sandbox (зеркало)
+        ↓
+PostgreSQL: audit_log · pending_actions · oauth_tokens (AES-256-GCM)
+```
+
+API-защита: в production-режиме без `AGENT_API_KEY` REST API **недоступен**
+(fail-closed, 503); rate limiting 120 read/20 write req/min на IP.
 
 ## Возможности
 

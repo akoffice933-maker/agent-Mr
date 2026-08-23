@@ -1,13 +1,24 @@
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
+import { getApiKey, isProductionMode } from "@/lib/auth-policy";
 
 export const dynamic = "force-dynamic";
 
+const startedAt = Date.now();
+
 export async function GET() {
+  let dbOk = false;
   try {
     await db.execute(sql`select 1`);
-    return Response.json({ ok: true });
+    dbOk = true;
   } catch {
-    return Response.json({ ok: false }, { status: 500 });
+    dbOk = false;
   }
+  return Response.json({
+    ok: dbOk,
+    db: dbOk,
+    mode: isProductionMode() ? "production" : "development",
+    auth: getApiKey() ? "api-key" : "open",
+    uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+  });
 }
