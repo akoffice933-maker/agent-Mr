@@ -17,11 +17,12 @@
       agent-Mr
     </a>
     <div class="nav-links">
-      <a href="#demo">Демо</a>
-      <a href="#features">Возможности</a>
-      <a href="#arch">Архитектура</a>
-      <a href="#commands">Команды</a>
+      <a href="#demo" data-i18n="nav.demo">Демо</a>
+      <a href="#features" data-i18n="nav.features">Возможности</a>
+      <a href="#arch" data-i18n="nav.arch">Архитектура</a>
+      <a href="#commands" data-i18n="nav.commands">Команды</a>
     </div>
+    <button id="langBtn" class="gh-badge" title="Switch language / Сменить язык">EN</button>
     <a class="gh-badge" href="https://github.com/akoffice933-maker/agent-Mr" target="_blank" rel="noopener">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub
@@ -29,103 +30,129 @@
   </div>
 </nav>
 
-<header class="hero wrap">
-  <div class="hero-eyebrow">● Интерактивное демо — данные seed-кабинета «Ромашка Мебель»</div>
-  <h1>Один AI-агент для <em>Google Ads</em>, <em>Яндекс.Директа</em> и <em>Авито</em></h1>
-  <p class="sub">Управляет кампаниями, ставками и продвижением тремя площадками из одного чата: намерения понимает LLM, каждый шаг проходит safety-слой — dry-run, лимиты бюджета и подтверждение — и попадает в audit-log.</p>
+<header class="hero wrap"><div class="hero-grid"><div class="hero-copy">
+  <div class="hero-eyebrow" data-i18n="hero.eyebrow"></div>
+  <h1><span data-i18n="hero.title1"></span><em data-i18n="hero.title2"></em><span data-i18n="hero.title3"></span><em data-i18n="hero.title4"></em><span data-i18n="hero.title5"></span><em data-i18n="hero.title6"></em></h1>
+  <p class="sub" data-i18n="hero.sub">Управляет кампаниями, ставками и продвижением тремя площадками из одного чата: намерения понимает LLM, каждый шаг проходит safety-слой — dry-run, лимиты бюджета и подтверждение — и попадает в audit-log.</p>
   <div class="hero-cta">
-    <a class="btn btn-primary" href="#demo">Попробовать в демо-чате ↓</a>
-    <a class="btn btn-ghost" href="https://github.com/akoffice933-maker/agent-Mr" target="_blank" rel="noopener">Исходный код и ТЗ</a>
+    <a class="btn btn-primary" href="#demo" data-i18n="hero.cta1">Попробовать в демо-чате ↓</a>
+    <a class="btn btn-ghost" href="https://github.com/akoffice933-maker/agent-Mr" target="_blank" rel="noopener" data-i18n="hero.cta2">Исходный код и ТЗ</a>
   </div>
   <div class="platforms-row">
-    <span class="plat-pill"><span class="plat-dot" style="background:var(--google)"></span>Google Ads API</span>
-    <span class="plat-pill"><span class="plat-dot" style="background:var(--yandex)"></span>Яндекс.Директ API v5</span>
-    <span class="plat-pill"><span class="plat-dot" style="background:var(--avito)"></span>Авито Business API</span>
-    <span class="plat-pill"><span class="plat-dot" style="background:var(--accent)"></span>OpenRouter LLM + MCP + Telegram</span>
+    <span class="plat-pill"><span class="plat-dot" style="background:var(--google)"></span><span data-i18n="pill.google">Google Ads API</span></span>
+    <span class="plat-pill"><span class="plat-dot" style="background:var(--yandex)"></span><span data-i18n="pill.yandex">Яндекс.Директ API v5</span></span>
+    <span class="plat-pill"><span class="plat-dot" style="background:var(--avito)"></span><span data-i18n="pill.avito">Авито Business API</span></span>
+    <span class="plat-pill"><span class="plat-dot" style="background:var(--accent)"></span><span data-i18n="pill.llm">OpenRouter LLM + MCP + Telegram</span></span>
   </div>
+</div>
+  <div class="hero-media">
+    <span class="media-badge" data-i18n="hero.mediaBadge">запись с живого демо · sandbox</span>
+    <img src="assets/demo-chat.gif" alt="Demo: agent chat — spend report, pause preview, confirmation" width="520" loading="eager" />
+  </div>
+</div>
 </header>
 
 <section id="demo" class="wrap">
-  <h2 class="section-title">Живое демо агента</h2>
-  <p class="section-sub">Писите команды на естественном языке — как в реальном приложении. Действия, влияющие на бюджет, показывают предпросмотр и ждут подтверждения кнопками. Справа — trace последней операции и audit-log.</p>
+  <h2 class="section-title" data-i18n="demo.title">Живое демо агента</h2>
+  <p class="section-sub" data-i18n="demo.sub">Писите команды на естественном языке — как в реальном приложении. Действия, влияющие на бюджет, показывают предпросмотр и ждут подтверждения кнопками. Справа — trace последней операции и audit-log.</p>
 
   <div class="demo-grid">
     <div class="chat-card">
       <div class="chat-head">
         <div class="avatar">ai</div>
-        <div class="who"><b>Unified AI Ads Agent</b><span>● онлайн · rule-based + LLM</span></div>
+        <div class="who"><b>Unified AI Ads Agent</b><span data-i18n="chat.online">● онлайн · rule-based + LLM</span></div>
         <div class="mode">sandbox</div>
       </div>
       <div class="chat-body" id="chatBody"></div>
       <div class="chips" id="chips"></div>
       <div class="chat-input">
-        <input id="chatInput" type="text" placeholder="Например: Покажи расходы за последние 7 дней" autocomplete="off" />
+        <input id="chatInput" type="text" placeholder="" data-i18n-ph="chat.placeholder" autocomplete="off" />
         <button id="sendBtn">→</button>
       </div>
     </div>
 
     <div class="side-card">
-      <h3>Трассировка последней операции</h3>
+      <h3 data-i18n="side.trace">Трассировка последней операции</h3>
       <div class="audit-list" id="tracePanel">
-        <div class="hint" id="traceHint">Выполните команду — здесь появится цепочка: намерение → адаптеры → safety → результат.</div>
+        <div class="hint" id="traceHint" data-i18n="side.traceHint">Выполните команду — здесь появится цепочка: намерение → адаптеры → safety → результат.</div>
       </div>
-      <h3 style="margin-top:6px">Audit-log</h3>
-      <div class="hint">Полный журнал действий агента (кто, что, когда, результат)</div>
+      <h3 style="margin-top:6px" data-i18n="side.audit">Audit-log</h3>
+      <div class="hint" data-i18n="side.auditHint">Полный журнал действий агента (кто, что, когда, результат)</div>
       <div class="audit-list" id="auditPanel">
-        <div class="hint" id="auditHint">Журнал пуст — начните с любой команды.</div>
+        <div class="hint" id="auditHint" data-i18n="side.auditEmpty">Журнал пуст — начните с любой команды.</div>
       </div>
     </div>
   </div>
 </section>
 
+
+<section id="shots" class="wrap">
+  <h2 class="section-title" data-i18n="shots.title">Интерфейс приложения</h2>
+  <p class="section-sub" data-i18n="shots.sub">Скриншоты реального Next.js-приложения (демо-кабинет «Ромашка Мебель»): чат с dry-run-предпросмотром действий, сквозная аналитика по трём площадкам, журнал аудита и рекомендации. Нажмите на скриншот — откроется в полном размере.</p>
+  <div class="shots">
+    <a class="shot" href="assets/app-agent.png" target="_blank" rel="noopener">
+      <img src="assets/app-agent.png" alt="Agent chat with dry-run preview" loading="lazy" />
+      <span data-i18n="shots.1">Чат с агентом: предпросмотр паузы 3 кампаний и подтверждение</span>
+    </a>
+    <a class="shot" href="assets/app-analytics.png" target="_blank" rel="noopener">
+      <img src="assets/app-analytics.png" alt="Cross-platform analytics" loading="lazy" />
+      <span data-i18n="shots.2">Сквозная аналитика: расход, CTR и CPA по трём площадкам</span>
+    </a>
+    <a class="shot" href="assets/app-audit.png" target="_blank" rel="noopener">
+      <img src="assets/app-audit.png" alt="Audit log and recommendations" loading="lazy" />
+      <span data-i18n="shots.3">Журнал аудита и рекомендации по оптимизации</span>
+    </a>
+  </div>
+</section>
+
 <section id="features" class="wrap">
-  <h2 class="section-title">Возможности</h2>
-  <p class="section-sub">Всё, что нужно, чтобы вести три рекламных кабинета как один.</p>
+  <h2 class="section-title" data-i18n="feat.title">Возможности</h2>
+  <p class="section-sub" data-i18n="feat.sub">Всё, что нужно, чтобы вести три рекламных кабинета как один.</p>
   <div class="features">
     <div class="feat">
       <div class="ico">💬</div>
-      <h3>Естественный язык</h3>
-      <p>LLM (OpenRouter) с tool calling разбирает намерения; без ключа — детерминированный rule-based парсер. RU/EN, контекст диалога между репликами.</p>
+      <h3 data-i18n="feat1.t">Естественный язык</h3>
+      <p data-i18n="feat1.d">LLM (OpenRouter) с tool calling разбирает намерения; без ключа — детерминированный rule-based парсер. RU/EN, контекст диалога между репликами.</p>
     </div>
     <div class="feat">
       <div class="ico">🛡️</div>
-      <h3>Safety-слой</h3>
-      <p>Dry-run по умолчанию, дневные/недельные/месячные лимиты расхода, обязательное подтверждение действий, влияющих на бюджет, re-check лимитов при подтверждении.</p>
+      <h3 data-i18n="feat2.t">Safety-слой</h3>
+      <p data-i18n="feat2.d">Dry-run по умолчанию, дневные/недельные/месячные лимиты расхода, обязательное подтверждение действий, влияющих на бюджет, re-check лимитов при подтверждении.</p>
     </div>
     <div class="feat">
       <div class="ico">📊</div>
-      <h3>Кросс-платформенная аналитика</h3>
-      <p>Единая модель кампаний/объявлений: сводный расход, сравнение CPA, CTR, статистика ключей, чаты Авито — по всем трём площадкам одновременно.</p>
+      <h3 data-i18n="feat3.t">Кросс-платформенная аналитика</h3>
+      <p data-i18n="feat3.d">Единая модель кампаний/объявлений: сводный расход, сравнение CPA, CTR, статистика ключей, чаты Авито — по всем трём площадкам одновременно.</p>
     </div>
     <div class="feat">
       <div class="ico">📈</div>
-      <h3>Cross-Platform Advisor</h3>
-      <p>Агент сам замечает разрывы в эффективности и предлагает переносить бюджет с худшей площадки на лучшую — с подтверждением.</p>
+      <h3 data-i18n="feat4.t">Cross-Platform Advisor</h3>
+      <p data-i18n="feat4.d">Агент сам замечает разрывы в эффективности и предлагает переносить бюджет с худшей площадки на лучшую — с подтверждением.</p>
     </div>
     <div class="feat">
       <div class="ico">🧾</div>
-      <h3>Audit-log</h3>
-      <p>Каждое действие (включая dry-run и блокировки) логируется: кто, что, когда, с какими параметрами и с каким результатом.</p>
+      <h3 data-i18n="feat5.t">Audit-log</h3>
+      <p data-i18n="feat5.d">Каждое действие (включая dry-run и блокировки) логируется: кто, что, когда, с какими параметрами и с каким результатом.</p>
     </div>
     <div class="feat">
       <div class="ico">🔌</div>
-      <h3>Единый REST API</h3>
-      <p>Web-чат, Telegram-бот и MCP-сервер — тонкие клиенты одного API. Подключите агента в Claude Desktop или в свой AI-инструмент.</p>
+      <h3 data-i18n="feat6.t">Единый REST API</h3>
+      <p data-i18n="feat6.d">Web-чат, Telegram-бот и MCP-сервер — тонкие клиенты одного API. Подключите агента в Claude Desktop или в свой AI-инструмент.</p>
     </div>
   </div>
 </section>
 
 <section id="arch" class="wrap">
-  <h2 class="section-title">Как работает</h2>
-  <p class="section-sub">Одна команда — одна прослеживаемая цепочка от намерения до audit-log.</p>
+  <h2 class="section-title" data-i18n="arch.title">Как работает</h2>
+  <p class="section-sub" data-i18n="arch.sub">Одна команда — одна прослеживаемая цепочка от намерения до audit-log.</p>
   <div class="arch">
-    <div class="arch-box"><b>Пользователь</b><span>веб-чат · Telegram-бот · MCP-клиент</span></div>
+    <div class="arch-box"><b data-i18n="arch.user">Пользователь</b><span data-i18n="arch.userSub">веб-чат · Telegram-бот · MCP-клиент</span></div>
     <div class="arch-arrow">↓</div>
-    <div class="arch-box hl"><b>AI Core</b><span>LLM (OpenRouter, tool calling) + Session Context → rule-based fallback</span></div>
+    <div class="arch-box hl"><b data-i18n="arch.ai">AI Core</b><span data-i18n="arch.aiSub">LLM (OpenRouter, tool calling) + Session Context → rule-based fallback</span></div>
     <div class="arch-arrow">↓</div>
-    <div class="arch-box"><b>Unified Tool Layer</b><span>13 единых команд: расход, CPA, паузы, ставки, минус-фразы, продвижение, аудит, рекомендации</span></div>
+    <div class="arch-box"><b data-i18n="arch.tools">Unified Tool Layer</b><span data-i18n="arch.toolsSub">13 единых команд: расход, CPA, паузы, ставки, минус-фразы, продвижение, аудит, рекомендации</span></div>
     <div class="arch-arrow">↓</div>
-    <div class="arch-box"><b>Safety Layer</b><span>read-only → лимиты (день/неделя/месяц) → dry-run → pending → подтверждение</span></div>
+    <div class="arch-box"><b data-i18n="arch.safety">Safety Layer</b><span data-i18n="arch.safetySub">read-only → лимиты (день/неделя/месяц) → dry-run → pending → подтверждение</span></div>
     <div class="arch-arrow">↓</div>
     <div class="arch-row">
       <div class="arch-box"><b>Google Ads</b><span>API / OAuth</span></div>
@@ -133,30 +160,30 @@
       <div class="arch-box"><b>Авито</b><span>Business API</span></div>
     </div>
     <div class="arch-arrow">↓</div>
-    <div class="arch-box"><b>PostgreSQL (Drizzle)</b><span>unified-зеркало · audit_log · pending_actions · oauth_tokens (AES-256-GCM)</span></div>
+    <div class="arch-box"><b data-i18n="arch.db">PostgreSQL (Drizzle)</b><span data-i18n="arch.dbSub">unified-зеркало · audit_log · pending_actions · oauth_tokens (AES-256-GCM)</span></div>
   </div>
 </section>
 
 <section id="commands" class="wrap">
-  <h2 class="section-title">Unified-команды</h2>
-  <p class="section-sub">Каждая команда маршрутизируется в одну, несколько или все три площадки и одинаково доступна из веба, Telegram и MCP.</p>
+  <h2 class="section-title" data-i18n="cmd.title">Unified-команды</h2>
+  <p class="section-sub" data-i18n="cmd.sub">Каждая команда маршрутизируется в одну, несколько или все три площадки и одинаково доступна из веба, Telegram и MCP.</p>
   <div class="cmds">
     <table>
-      <thead><tr><th>Команда</th><th>Назначение</th><th>Платформы</th></tr></thead>
+      <thead><tr><th data-i18n="cmd.h1">Команда</th><th data-i18n="cmd.h2">Назначение</th><th data-i18n="cmd.h3">Платформы</th></tr></thead>
       <tbody>
-        <tr><td><code>get_spend_report</code></td><td>Сводный расход за период</td><td>все</td></tr>
-        <tr><td><code>compare_cpa</code></td><td>Сравнение CPA между площадками</td><td>Google, Директ</td></tr>
-        <tr><td><code>pause_low_ctr_campaigns</code></td><td>Пауза кампаний с CTR ниже порога</td><td>все</td></tr>
-        <tr><td><code>set_campaign_status</code></td><td>Пауза/запуск конкретной кампании</td><td>все</td></tr>
-        <tr><td><code>adjust_bids</code></td><td>Изменение ставок по фильтру</td><td>Google, Директ</td></tr>
-        <tr><td><code>create_campaign</code></td><td>Создание кампании</td><td>все</td></tr>
-        <tr><td><code>list_campaigns</code></td><td>Список кампаний со статистикой</td><td>все</td></tr>
-        <tr><td><code>get_keyword_performance</code></td><td>Статистика по ключевым фразам</td><td>Google, Директ</td></tr>
-        <tr><td><code>add_negative_keywords</code></td><td>Добавление минус-фраз</td><td>Google, Директ</td></tr>
-        <tr><td><code>promote_low_view_listings</code></td><td>Продвижение объявлений Авито</td><td>Авито</td></tr>
-        <tr><td><code>get_avito_chat_summary</code></td><td>Сводка по чатам/лидам Авито</td><td>Авито</td></tr>
-        <tr><td><code>run_account_audit</code></td><td>Автоматический аудит кабинетов</td><td>все</td></tr>
-        <tr><td><code>list/apply_recommendation</code></td><td>Рекомендации и их применение</td><td>все</td></tr>
+        <tr><td><code>get_spend_report</code></td><td data-i18n="cmd.r1">Сводный расход за период</td><td data-i18n="cmd.all">все</td></tr>
+        <tr><td><code>compare_cpa</code></td><td data-i18n="cmd.r2">Сравнение CPA между площадками</td><td data-i18n="cmd.gy">Google, Директ</td></tr>
+        <tr><td><code>pause_low_ctr_campaigns</code></td><td data-i18n="cmd.r3">Пауза кампаний с CTR ниже порога</td><td data-i18n="cmd.all">все</td></tr>
+        <tr><td><code>set_campaign_status</code></td><td data-i18n="cmd.r4">Пауза/запуск конкретной кампании</td><td data-i18n="cmd.all">все</td></tr>
+        <tr><td><code>adjust_bids</code></td><td data-i18n="cmd.r5">Изменение ставок по фильтру</td><td data-i18n="cmd.gy">Google, Директ</td></tr>
+        <tr><td><code>create_campaign</code></td><td data-i18n="cmd.r6">Создание кампании</td><td data-i18n="cmd.all">все</td></tr>
+        <tr><td><code>list_campaigns</code></td><td data-i18n="cmd.r7">Список кампаний со статистикой</td><td data-i18n="cmd.all">все</td></tr>
+        <tr><td><code>get_keyword_performance</code></td><td data-i18n="cmd.r8">Статистика по ключевым фразам</td><td data-i18n="cmd.gy">Google, Директ</td></tr>
+        <tr><td><code>add_negative_keywords</code></td><td data-i18n="cmd.r9">Добавление минус-фраз</td><td data-i18n="cmd.gy">Google, Директ</td></tr>
+        <tr><td><code>promote_low_view_listings</code></td><td data-i18n="cmd.r10">Продвижение объявлений Авито</td><td data-i18n="cmd.avito">Авито</td></tr>
+        <tr><td><code>get_avito_chat_summary</code></td><td data-i18n="cmd.r11">Сводка по чатам/лидам Авито</td><td data-i18n="cmd.avito">Авито</td></tr>
+        <tr><td><code>run_account_audit</code></td><td data-i18n="cmd.r12">Автоматический аудит кабинетов</td><td data-i18n="cmd.all">все</td></tr>
+        <tr><td><code>list/apply_recommendation</code></td><td data-i18n="cmd.r13">Рекомендации и их применение</td><td data-i18n="cmd.all">все</td></tr>
       </tbody>
     </table>
   </div>
@@ -164,12 +191,13 @@
 
 <footer>
   <div class="wrap foot">
-    <span>agent-Mr · Unified AI Ads Agent · демо на детерминированных seed-данных</span>
+    <span data-i18n="foot.left">agent-Mr · Unified AI Ads Agent · демо на детерминированных seed-данных</span>
     <a class="sp" href="https://github.com/akoffice933-maker/agent-Mr" target="_blank" rel="noopener">github.com/akoffice933-maker/agent-Mr →</a>
   </div>
 </footer>
 
 <script src="data.js"></script>
+<script src="i18n.js"></script>
 <script src="agent.js"></script>
 <script src="ui.js"></script>
 </body>

@@ -65,3 +65,5 @@ const CHATS = [
 
 const PLATFORM_LABEL = { google: "Google Ads", yandex: "Яндекс.Директ", avito: "Авито" };
 const PLATFORM_COLOR = { google: "#6aa6f5", yandex: "#fb5a3c", avito: "#47d185" };
+
+const PLATFORM_LABEL_EN = { google: "Google Ads", yandex: "Yandex Direct", avito: "Avito" };

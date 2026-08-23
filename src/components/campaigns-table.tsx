@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useRef, useState } from "react";
 import { Icon } from "./icons";
 import { PlatformBadge, StatusPill } from "./ui";
 import type { Platform } from "@/lib/agent/types";
@@ -31,21 +31,22 @@ export function CampaignsTable({ rows }: { rows: CampaignUiRow[] }) {
   const [q, setQ] = useState("");
   const [local, setLocal] = useState<Record<number, Partial<CampaignUiRow>>>({});
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: "ok" | "warn" | "bad" }[]>([]);
+  const toastSeq = useRef(0);
 
   const notify = (text: string, kind: "ok" | "warn" | "bad" = "ok") => {
-    const id = Date.now() + Math.random();
+    const id = ++toastSeq.current;
     setToasts((t) => [...t, { id, text, kind }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
   };
 
-  const filtered = useMemo(() => {
-    return rows
-      .map((r) => ({ ...r, ...local[r.id] }))
-      .filter((r) => platform === "all" || r.platform === platform)
-      .filter((r) => status === "all" || r.status === status)
-      .filter((r) => r.name.toLowerCase().includes(q.toLowerCase()))
-      .sort((a, b) => b.spend - a.spend);
-  }, [rows, local, platform, status, q]);
+  // small dataset (~20 rows) — plain derivation, no memoization
+  const qLower = q.toLowerCase();
+  const filtered = rows
+    .map((r) => ({ ...r, ...local[r.id] }))
+    .filter((r) => platform === "all" || r.platform === platform)
+    .filter((r) => status === "all" || r.status === status)
+    .filter((r) => r.name.toLowerCase().includes(qLower))
+    .sort((a, b) => b.spend - a.spend);
 
   const act = async (row: CampaignUiRow, action: "pause" | "resume" | "promote") => {
     try {

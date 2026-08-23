@@ -1,0 +1,72 @@
+# CI for the main Next.js application: lint + typecheck + unit tests + production build.
+# Runs on every push/PR to main. The demo site (demo/) is deployed separately
+# by github-pages.yml.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "demo/**"
+      - "docs/**"
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        # Unit tests are DB-free (vitest setup provides a dummy DATABASE_URL)
+        run: npm run test
+
+      - name: Production build
+        # Build-time imports instantiate the pg pool lazily; a dummy URL is enough.
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+          ENCRYPTION_KEY: ci-only-encryption-key
+        run: npm run build
+
+  clients:
+    # mcp-server and telegram-bot are separate packages with their own lockfiles.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: MCP server — install & typecheck
+        working-directory: mcp-server
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
+
+      - name: Telegram bot — install & typecheck
+        working-directory: telegram-bot
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
