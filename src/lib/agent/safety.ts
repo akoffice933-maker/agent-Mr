@@ -1,7 +1,9 @@
 // Safety layer: dry-run, spend limits, confirmations, audit log.
+// Tenant-scoped via RLS: settings/metrics queries are automatically filtered
+// to the current organization (src/lib/tenant/pool.ts).
 
 import { eq, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import { auditLog, metricsDaily, settings } from "@/db/schema";
 import { dateNDaysAgo } from "@/lib/format";
 
@@ -44,11 +46,12 @@ export async function updateSettings(patch: Partial<SafetySettings>): Promise<Sa
   if (patch.weeklyLimit !== undefined) entries.push(["weekly_limit", patch.weeklyLimit]);
   if (patch.monthlyLimit !== undefined) entries.push(["monthly_limit", patch.monthlyLimit]);
   if (patch.confirmBudget !== undefined) entries.push(["confirm_budget", patch.confirmBudget]);
+  const org = currentTenant()?.orgId ?? 1;
   for (const [key, value] of entries) {
     await db
       .insert(settings)
-      .values({ key, value })
-      .onConflictDoUpdate({ target: settings.key, set: { value } });
+      .values({ organizationId: org, key, value })
+      .onConflictDoUpdate({ target: [settings.organizationId, settings.key], set: { value } });
   }
   return getSettings();
 }
@@ -119,6 +122,7 @@ export interface AuditEntry {
 
 export async function writeAudit(e: AuditEntry): Promise<void> {
   await db.insert(auditLog).values({
+    organizationId: currentTenant()?.orgId ?? 1,
     actor: e.actor,
     tool: e.tool,
     params: (e.params ?? {}) as Record<string, unknown>,

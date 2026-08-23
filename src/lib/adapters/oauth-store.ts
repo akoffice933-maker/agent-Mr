@@ -1,6 +1,6 @@
 // Encrypted OAuth token store (ТЗ 4.1: oauth_tokens, шифрование на уровне приложения).
 import { eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import { accounts, oauthTokens } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/crypto";
 import type { Platform } from "@/lib/agent/types";
@@ -26,6 +26,7 @@ export async function storeToken(platform: Platform, t: StoredToken): Promise<vo
   await db
     .insert(oauthTokens)
     .values({
+      organizationId: currentTenant()?.orgId ?? 1,
       platform,
       accessToken: encrypt(t.accessToken),
       refreshToken: t.refreshToken ? encrypt(t.refreshToken) : null,

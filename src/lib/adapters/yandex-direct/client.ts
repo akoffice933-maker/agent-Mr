@@ -6,7 +6,7 @@
 // the CPA column stays empty (documented).
 
 import { and, eq, inArray } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import { campaigns, keywords, metricsDaily, negativeKeywords } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
 import { fetchDailyConversions, isMetrikaConfigured } from "./metrika";
@@ -115,7 +115,7 @@ async function syncCampaigns(): Promise<Map<string, number>> {
       await db.update(campaigns).set({ name, status, budgetDaily: budget }).where(eq(campaigns.id, existing.id));
       idMap.set(externalId, existing.id);
     } else {
-      const row = (await db.insert(campaigns).values({ platform: "yandex", kind: "campaign", externalId, name, status, budgetDaily: budget, strategy: "Direct" }).returning())[0];
+      const row = (await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "yandex", kind: "campaign", externalId, name, status, budgetDaily: budget, strategy: "Direct" }).returning())[0];
       idMap.set(externalId, row.id);
     }
   }

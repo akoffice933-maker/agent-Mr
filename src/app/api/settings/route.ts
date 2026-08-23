@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, updateSettings, writeAudit } from "@/lib/agent/safety";
 import { accountMode, hasToken, setAccountMode } from "@/lib/adapters/oauth-store";
 import type { Platform } from "@/lib/agent/types";
+import { withTenantRequest } from "@/lib/tenant/request";
 
 export const dynamic = "force-dynamic";
 
@@ -17,52 +18,62 @@ function platformConfigured(p: Platform): boolean {
   }
 }
 
-export async function GET() {
-  const s = await getSettings();
-  const platforms = (["google", "yandex", "avito"] as Platform[]).map(async (p) => ({
-    platform: p,
-    mode: await accountMode(p),
-    token: await hasToken(p),
-    configured: platformConfigured(p),
-  }));
-  return NextResponse.json({ ...s, platforms: await Promise.all(platforms) });
+// Tenant-scoped: settings and account modes belong to the caller's organization (RLS).
+export async function GET(req: Request) {
+  try {
+    return await withTenantRequest(req, async () => {
+      const s = await getSettings();
+      const platforms = (["google", "yandex", "avito"] as Platform[]).map(async (p) => ({
+        platform: p,
+        mode: await accountMode(p),
+        token: await hasToken(p),
+        configured: platformConfigured(p),
+      }));
+      return NextResponse.json({ ...s, platforms: await Promise.all(platforms) });
+    });
+  } catch (e) {
+    console.error("settings error", e);
+    return NextResponse.json({ error: "internal" }, { status: 500 });
+  }
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    // Switch an account back to sandbox (or production) mode from the UI.
-    if (typeof body.platform === "string" && ["google", "yandex", "avito"].includes(body.platform) && ["sandbox", "production"].includes(body.mode)) {
-      await setAccountMode(body.platform as Platform, body.mode as "sandbox" | "production");
+    return await withTenantRequest(req, async () => {
+      const body = await req.json();
+      // Switch an account back to sandbox (or production) mode from the UI.
+      if (typeof body.platform === "string" && ["google", "yandex", "avito"].includes(body.platform) && ["sandbox", "production"].includes(body.mode)) {
+        await setAccountMode(body.platform as Platform, body.mode as "sandbox" | "production");
+        await writeAudit({
+          actor: "ui",
+          tool: "set_platform_mode",
+          params: body,
+          platforms: [body.platform],
+          dryRun: false,
+          status: "applied",
+          summary: `Режим площадки ${body.platform}: ${body.mode}`,
+        });
+        return NextResponse.json({ ok: true, platform: body.platform, mode: body.mode });
+      }
+      const s = await updateSettings({
+        dryRun: typeof body.dryRun === "boolean" ? body.dryRun : undefined,
+        readOnly: typeof body.readOnly === "boolean" ? body.readOnly : undefined,
+        dailyLimit: typeof body.dailyLimit === "number" ? body.dailyLimit : undefined,
+        weeklyLimit: typeof body.weeklyLimit === "number" ? body.weeklyLimit : undefined,
+        monthlyLimit: typeof body.monthlyLimit === "number" ? body.monthlyLimit : undefined,
+        confirmBudget: typeof body.confirmBudget === "boolean" ? body.confirmBudget : undefined,
+      });
       await writeAudit({
         actor: "ui",
-        tool: "set_platform_mode",
+        tool: "update_settings",
         params: body,
-        platforms: [body.platform],
+        platforms: [],
         dryRun: false,
         status: "applied",
-        summary: `Режим площадки ${body.platform}: ${body.mode}`,
+        summary: `Изменены настройки безопасности: ${Object.keys(body).join(", ")}`,
       });
-      return NextResponse.json({ ok: true, platform: body.platform, mode: body.mode });
-    }
-    const s = await updateSettings({
-      dryRun: typeof body.dryRun === "boolean" ? body.dryRun : undefined,
-      readOnly: typeof body.readOnly === "boolean" ? body.readOnly : undefined,
-      dailyLimit: typeof body.dailyLimit === "number" ? body.dailyLimit : undefined,
-      weeklyLimit: typeof body.weeklyLimit === "number" ? body.weeklyLimit : undefined,
-      monthlyLimit: typeof body.monthlyLimit === "number" ? body.monthlyLimit : undefined,
-      confirmBudget: typeof body.confirmBudget === "boolean" ? body.confirmBudget : undefined,
+      return NextResponse.json(s);
     });
-    await writeAudit({
-      actor: "ui",
-      tool: "update_settings",
-      params: body,
-      platforms: [],
-      dryRun: false,
-      status: "applied",
-      summary: `Изменены настройки безопасности: ${Object.keys(body).join(", ")}`,
-    });
-    return NextResponse.json(s);
   } catch (e) {
     console.error("settings error", e);
     return NextResponse.json({ error: "internal" }, { status: 500 });

@@ -7,6 +7,8 @@ import { Icon } from "@/components/icons";
 import { Card, SectionTitle } from "@/components/ui";
 import { OnboardBanner } from "@/components/onboard-banner";
 import type { Platform } from "@/lib/agent/types";
+import { headers } from "next/headers";
+import { withTenantHeaders } from "@/lib/tenant/request";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +36,8 @@ const UNIFIED_TOOLS: { name: string; desc: string; platforms: ("g" | "y" | "a")[
 const DOT: Record<string, string> = { g: "bg-google", y: "bg-yandex", a: "bg-avito" };
 
 export default async function AgentPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const __h = await headers();
+  return withTenantHeaders(__h, async () => {
   const sp = await searchParams;
   const onboard = typeof sp.onboard === "string" && ["google", "yandex", "avito"].includes(sp.onboard) ? (sp.onboard as Platform) : null;
 
@@ -131,4 +135,5 @@ export default async function AgentPage({ searchParams }: { searchParams: Promis
       </div>
     </div>
   );
+  });
 }

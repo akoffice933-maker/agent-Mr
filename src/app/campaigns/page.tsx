@@ -5,10 +5,14 @@ import { CampaignsTable, type CampaignUiRow } from "@/components/campaigns-table
 import { SectionTitle } from "@/components/ui";
 import type { Platform } from "@/lib/agent/types";
 import { dateNDaysAgo } from "@/lib/format";
+import { headers } from "next/headers";
+import { withTenantHeaders } from "@/lib/tenant/request";
 
 export const dynamic = "force-dynamic";
 
 export default async function CampaignsPage() {
+  const __h = await headers();
+  return withTenantHeaders(__h, async () => {
   const from = dateNDaysAgo(6);
   const [camps, metrics] = await Promise.all([
     db.select().from(campaigns),
@@ -57,4 +61,5 @@ export default async function CampaignsPage() {
       <CampaignsTable rows={rows} />
     </div>
   );
+  });
 }

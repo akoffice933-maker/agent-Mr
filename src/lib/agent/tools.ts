@@ -2,7 +2,7 @@
 // (Google Ads, Яндекс.Директ, Авито) through the unified data model.
 
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import {
   campaigns,
   chats,
@@ -347,6 +347,7 @@ export async function runAccountAudit(i: ParsedIntent): Promise<ToolOutput> {
     for (const iss of block.issues.filter((x) => x.severity !== "low").slice(0, 3)) {
       if (!existing.has(iss.text)) {
         await db.insert(recommendations).values({
+          organizationId: currentTenant()?.orgId ?? 1,
           platform: block.platform,
           type: "auto_audit",
           description: iss.text,

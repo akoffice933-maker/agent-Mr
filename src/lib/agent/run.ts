@@ -1,7 +1,7 @@
 // Agent core: intent (LLM → rules) → adapter sync → tool routing → safety layer → audit → chat persistence.
 
 import { and, eq, inArray } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import {
   accounts,
   campaigns,
@@ -44,6 +44,10 @@ const TOOL_DESC: Record<string, string> = {
   fallback: "уточнение запроса",
 };
 
+function orgId(): number {
+  return currentTenant()?.orgId ?? 1;
+}
+
 export function serializeMessage(row: {
   id: number;
   role: string;
@@ -66,14 +70,14 @@ export async function getChatHistory(): Promise<ChatMessageRow[]> {
 }
 
 async function insertAgentMessage(content: string, meta: AgentMeta | null): Promise<ChatMessageRow> {
-  const row = (await db.insert(messages).values({ role: "agent", content, meta }).returning())[0];
+  const row = (await db.insert(messages).values({ organizationId: orgId(), role: "agent", content, meta }).returning())[0];
   return serializeMessage(row);
 }
 
 export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
   const started = Date.now();
   const text = raw.trim();
-  const userRow = (await db.insert(messages).values({ role: "user", content: text }).returning())[0];
+  const userRow = (await db.insert(messages).values({ organizationId: orgId(), role: "user", content: text }).returning())[0];
 
   const session = await buildSessionContext();
   const resolved = await resolveIntent(text, session);
@@ -157,6 +161,7 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
           await db
             .insert(pendingActions)
             .values({
+              organizationId: orgId(),
               tool: intent.tool,
               params: out.pending.params,
               preview: result,
@@ -287,21 +292,32 @@ function briefSummary(result: ResultPayload): string {
 }
 
 // ─── Applying / rejecting pending actions ──────────────────────────────────
-export async function resolvePending(id: number, decision: "approve" | "reject", actor = "chat") {
-  const pending = (await db.select().from(pendingActions).where(eq(pendingActions.id, id)))[0];
+export async function resolvePending(
+  id: number,
+  decision: "approve" | "reject",
+  actor = "chat",
+  ctx?: { orgId: number }
+) {
+  const org = ctx?.orgId ?? orgId();
+  // Tenant check (defense in depth on top of RLS): the action must belong to
+  // the caller's organization. Knowing another org's action id grants nothing.
+  const pending = (
+    await db.select().from(pendingActions).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org)))
+  )[0];
   if (!pending || pending.status !== "pending") {
-    return insertAgentMessage("Это действие уже обработано ранее — проверьте журнал аудита.", {
-      tool: "apply_pending",
-      toolLabel: "apply_pending",
-      platforms: [],
-      trace: [{ label: "Pending-действие не найдено или уже закрыто", status: "block" }],
-      durationMs: 60,
-      result: { kind: "text", text: "Действие уже было обработано." },
-    });
+    // 404-equivalent: do not leak that another org's action exists.
+    return null;
   }
 
   if (decision === "reject") {
-    await db.update(pendingActions).set({ status: "rejected" }).where(eq(pendingActions.id, id));
+    const rej = await db.update(pendingActions).set({ status: "rejected" }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending"))).returning();
+    if (!rej.length) {
+      return insertAgentMessage("Это действие уже обработано ранее — проверьте журнал аудита.", {
+        tool: "apply_pending", toolLabel: "apply_pending", platforms: [],
+        trace: [{ label: "Pending-действие уже закрыто", status: "block" }],
+        durationMs: 60, result: { kind: "text", text: "Действие уже было обработано." },
+      });
+    }
     await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "rejected", summary: `Отклонено пользователем: ${pending.tool} #${id}` });
     return insertAgentMessage("Отменил действие — изменения не применены. Записал в журнал аудита.", {
       tool: "apply_pending",
@@ -320,7 +336,7 @@ export async function resolvePending(id: number, decision: "approve" | "reject",
   const costDaily = Number(pending.costDaily ?? 0);
   const approvalPolicy = await evaluatePolicy({ tool: pending.tool, isWrite: true, settings: await getSettings(), costDaily });
   if (approvalPolicy.action === "block") {
-    await db.update(pendingActions).set({ status: "rejected" }).where(eq(pendingActions.id, id));
+    await db.update(pendingActions).set({ status: "rejected" }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending")));
     await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "blocked", summary: `Отклонено при подтверждении #${id}: ${approvalPolicy.reason}` });
     return insertAgentMessage(`Не применил действие #${id}: ${approvalPolicy.reason}`, {
         tool: "apply_pending",
@@ -342,7 +358,14 @@ export async function resolvePending(id: number, decision: "approve" | "reject",
   const adapterResults = await writeAdapters(applied.ops);
   const adapterDetail = adapterResults.map((r) => `${r.platform}[${r.mode}]: ${r.detail ?? (r.ok ? "ok" : "error")}`).join("; ");
 
-  await db.update(pendingActions).set({ status: "applied" }).where(eq(pendingActions.id, id));
+  const appliedRow = await db.update(pendingActions).set({ status: "applied" }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending"))).returning();
+  if (!appliedRow.length) {
+    return insertAgentMessage("Действие не применено: оно уже было обработано или не принадлежит вашей организации.", {
+      tool: "apply_pending", toolLabel: "apply_pending", platforms: [],
+      trace: [{ label: "Tenant check: действие недоступно", status: "block" }],
+      durationMs: 60, result: { kind: "text", text: "Действие не применено." },
+    });
+  }
   await writeAudit({
     actor,
     tool: pending.tool,
@@ -416,6 +439,7 @@ async function applyEffect(tool: string, params: Record<string, unknown>): Promi
       const platform = (params.platform as string) ?? "google";
       const acc = (await db.select().from(accounts).where(eq(accounts.platform, platform)))[0];
       await db.insert(campaigns).values({
+        organizationId: orgId(),
         accountId: acc?.id ?? null,
         platform,
         kind: "campaign",

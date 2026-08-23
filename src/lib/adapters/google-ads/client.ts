@@ -4,7 +4,7 @@
 // production use: `npm i google-ads`. Sandbox mode never touches this file.
 
 import { and, eq, inArray } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import { campaigns, keywords, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
 import type { DailyMetric, PlatformClient, WriteOp, WriteResult } from "../types";
@@ -141,7 +141,7 @@ export function createGoogleClient(): PlatformClient {
           idMap.set(externalId, existing.id);
         } else {
           const created = (
-            await db.insert(campaigns).values({ platform: "google", kind: "campaign", externalId, name, status, budgetDaily: budget, strategy: "Google Ads" }).returning()
+            await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "google", kind: "campaign", externalId, name, status, budgetDaily: budget, strategy: "Google Ads" }).returning()
           )[0];
           idMap.set(externalId, created.id);
         }

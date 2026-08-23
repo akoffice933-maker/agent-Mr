@@ -9,9 +9,12 @@ import {
   messages,
   metricsDaily,
   negativeKeywords,
+  organizations,
   recommendations,
   settings,
 } from "./schema";
+
+const ORG = 1; // default organization (seed runs as the privileged role)
 
 // deterministic RNG
 function mulberry32(seed: number) {
@@ -81,6 +84,11 @@ const AVITO: CampSpec[] = [
 ];
 
 async function main() {
+  const org = (await db.select().from(organizations).limit(1))[0];
+  if (!org) {
+    await db.insert(organizations).values({ name: "Default" });
+    console.log("→ Организация Default создана (id 1)");
+  }
   console.log("→ Очистка таблиц...");
   await db.delete(messages);
   await db.delete(recommendations);
@@ -95,9 +103,9 @@ async function main() {
   await db.delete(settings);
 
   console.log("→ Аккаунты...");
-  const accGoogle = (await db.insert(accounts).values({ platform: "google", name: "Google Ads · ООО «Ромашка Мебель»", login: "781-234-5690", mode: "sandbox" }).returning())[0];
-  const accYandex = (await db.insert(accounts).values({ platform: "yandex", name: "Яндекс.Директ · romashka-mebel", login: "kozharina@romashka.ru", mode: "sandbox" }).returning())[0];
-  const accAvito = (await db.insert(accounts).values({ platform: "avito", name: "Авито · Ромашка Мебель (Москва)", login: "romashka_mebel_msk", mode: "sandbox" }).returning())[0];
+  const accGoogle = (await db.insert(accounts).values({ organizationId: ORG, platform: "google", name: "Google Ads · ООО «Ромашка Мебель»", login: "781-234-5690", mode: "sandbox" }).returning())[0];
+  const accYandex = (await db.insert(accounts).values({ organizationId: ORG, platform: "yandex", name: "Яндекс.Директ · romashka-mebel", login: "kozharina@romashka.ru", mode: "sandbox" }).returning())[0];
+  const accAvito = (await db.insert(accounts).values({ organizationId: ORG, platform: "avito", name: "Авито · Ромашка Мебель (Москва)", login: "romashka_mebel_msk", mode: "sandbox" }).returning())[0];
 
   const all = [...GOOGLE, ...YANDEX, ...AVITO];
   const campIds: Record<string, number> = {};
@@ -109,6 +117,7 @@ async function main() {
     const accId = spec.platform === "google" ? accGoogle.id : spec.platform === "yandex" ? accYandex.id : accAvito.id;
     const inserted = (
       await db.insert(campaigns).values({
+        organizationId: ORG,
         accountId: accId,
         platform: spec.platform,
         kind: spec.kind,
@@ -248,6 +257,7 @@ async function main() {
   ];
   for (const r of recSeed) {
     await db.insert(recommendations).values({
+      organizationId: ORG,
       platform: r.platform,
       campaignId: campIds[r.camp] ?? null,
       type: r.type,
@@ -259,20 +269,21 @@ async function main() {
 
   console.log("→ Настройки безопасности...");
   await db.insert(settings).values([
-    { key: "dry_run", value: true },
-    { key: "read_only", value: true },
-    { key: "daily_limit", value: 50000 },
-    { key: "weekly_limit", value: 250000 },
-    { key: "monthly_limit", value: 900000 },
-    { key: "confirm_budget", value: true },
+    { organizationId: ORG, key: "dry_run", value: true },
+    { organizationId: ORG, key: "read_only", value: true },
+    { organizationId: ORG, key: "daily_limit", value: 50000 },
+    { organizationId: ORG, key: "weekly_limit", value: 250000 },
+    { organizationId: ORG, key: "monthly_limit", value: 900000 },
+    { organizationId: ORG, key: "confirm_budget", value: true },
   ]);
 
   console.log("→ Audit-log и приветствие...");
   await db.insert(auditLog).values([
-    { actor: "system", tool: "run_account_audit", params: { platforms: ["google", "yandex", "avito"] }, platforms: "google,yandex,avito", dryRun: false, status: "ok", summary: "Плановый аудит: 6 рекомендаций создано" },
-    { actor: "chat", tool: "get_spend_report", params: { days: 7 }, platforms: "google,yandex,avito", dryRun: false, status: "ok", summary: "Сводный расход за 7 дней" },
+    { organizationId: ORG, actor: "system", tool: "run_account_audit", params: { platforms: ["google", "yandex", "avito"] }, platforms: "google,yandex,avito", dryRun: false, status: "ok", summary: "Плановый аудит: 6 рекомендаций создано" },
+    { organizationId: ORG, actor: "chat", tool: "get_spend_report", params: { days: 7 }, platforms: "google,yandex,avito", dryRun: false, status: "ok", summary: "Сводный расход за 7 дней" },
   ]);
   await db.insert(messages).values({
+    organizationId: ORG,
     role: "agent",
     content:
       "Привет! Я Unified AI Ads Agent — управляю рекламой в Google Ads, Яндекс.Директе и на Авито из одного окна. Пишите команды на русском или английском, например: «Покажи расходы за последние 7 дней» или «Поставь на паузу кампании с CTR ниже 1%». Все изменения проходят через safety-слой: dry-run, лимиты и подтверждения.",

@@ -79,7 +79,11 @@ execution (другой оператор, исчерпанный лимит) —
     403 мутация без CSRF; 401 без сессии; machine-key 200/401; logout → replay
     сессии 401; lockout 429 после 5 неудач; UI-логин с редиректом на next.
 
-## Фаза C — Multi-tenancy
+## Фаза C — Tenant Isolation Phase ✅ (выполнена)
+
+> Фаза сознательно сделана не «миграцией таблиц», а доказательством того, что
+> tenant isolation невозможно случайно обойти. Инвариант проекта:
+> **Knowledge of another org's id (campaign/action/uuid) never grants access.**
 
 Целевая модель (SaaS):
 
@@ -98,8 +102,57 @@ Organization
   `user_id` — у pending_actions/audit_log (кто предложил / кто подтвердил)
 - **Enforced authorization на сервере**: все API-роуты проходят
   `requireOrgAccess(res, orgId)` — нет middle-варианта
-- Миграция: существующие данные попадают в организацию `default` (backward-compat)
-- Изоляция данных проверяется интеграционными тестами (tenant A не видит tenant B)
+
+Реализация:
+
+1. **Схема** (`0003` + `0004`): `organizations`, `org_members` (unique org+user, role),
+   `api_keys` (org-scoped machine keys, sha256 hash). `organization_id NOT NULL` + FK на
+   accounts, campaigns, pending_actions, audit_log, recommendations, chat_messages,
+   settings, oauth_tokens. Производные таблицы (metrics/keywords/negatives/chats)
+   изолируются через FK на campaigns.
+2. **RLS (FORCE) в Postgres** — изоляция на уровне базы: политика
+   `organization_id = tenant_org_id()`, где `tenant_org_id()` читает `app.org_id`
+   (NULL при отсутствии → 0 строк). Identity-плоскость (organizations, org_members,
+   api_keys, users, sessions) намеренно вне RLS — прокси резолвит контекст из неё.
+3. **Tenant context**: `session → user → org membership` (первичная организация),
+   устанавливается ТОЛЬКО в прокси внутренними заголовками `x-tenant-*`
+   (клиентские копии стираются). Из тела запроса org не берётся никогда.
+4. **Пул с закреплённым контекстом** (`src/lib/tenant/pool.ts`): `withTenant()`
+   пиннит ОДНО соединение на запрос, `SET app.org_id` на нём, все drizzle-запросы
+   маршрутизируются туда. Fail-closed: без контекста — 0 строк (баг теряет данные,
+   но не утекает).
+5. **Pending actions**: выборка `WHERE id AND organization_id = caller AND status='pending'`,
+   guarded-UPDATE с тем же условием; cross-tenant → 404 (без утечки существования);
+   re-check перед execution (R3).
+6. **OAuth**: `state` привязан к user+org инициировавшего; callback сверяет завершающую
+   сессию с state; токен и sync выполняются в tenant-контексте организации.
+7. **Machine keys**: `api_keys` (org-scoped, `amr_…`), MCP/Telegram получают org
+   из ключа; legacy env `AGENT_API_KEY` → default org. `npm run create-api-key`.
+8. **Доказательство** (E2E, 17/17): A не видит кампании B; B не видит кампании A;
+   approve чужого action → 404; pending-list изолирован; machine keys scoped;
+   CSRF/401/lockout не пострадал; RLS fail-closed проверен на уровне БД.
+
+Definition of Done — закрыто:
+
+- [x] organizations, org_members
+- [x] organization_id everywhere required (NOT NULL after migration)
+- [x] FK constraints + tenant indexes
+- [x] tenant context (session → user → membership)
+- [x] centralized tenant authorization (прокси + RLS)
+- [x] API isolation tests (E2E 2-org)
+- [x] service-layer isolation tests (pending guarded, RLS raw)
+- [x] MCP isolation tests (org-scoped keys, wrong key 401)
+- [x] pending-action isolation (404 cross-tenant, double-approve 404)
+- [x] OAuth isolation (state vs session, tenant-bound token storage)
+- [x] audit isolation (org-scoped audit_log, RLS)
+- [x] default-org migration (0004 backfill → NOT NULL)
+- [x] no client-supplied tenant trust (внутренние заголовки, стирание клиентских)
+- [x] CI green
+
+Операционное: миграции/сид выполняются привилегированным пользователем БД
+(BYPASSRLS, напр. `dbowner`), приложение — под `appuser` (подчиняется RLS).
+
+## Фаза D — RBAC
 
 ## Фаза D — RBAC
 

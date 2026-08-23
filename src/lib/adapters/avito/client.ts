@@ -5,7 +5,7 @@
 // endpoint paths below follow the public business-API docs; verify on first connect.
 
 import { and, eq, inArray } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
 import type { DailyMetric, PlatformClient, WriteOp, WriteResult } from "../types";
@@ -80,7 +80,7 @@ async function upsertListing(adv: Record<string, unknown>): Promise<void> {
   if (existing) {
     await db.update(campaigns).set({ name, status, price }).where(eq(campaigns.id, existing.id));
   } else {
-    await db.insert(campaigns).values({ platform: "avito", kind: "listing", externalId, name, status, price, strategy: "Avito" });
+    await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "avito", kind: "listing", externalId, name, status, price, strategy: "Avito" });
   }
 }
 

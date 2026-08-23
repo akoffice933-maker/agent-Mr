@@ -1,19 +1,23 @@
-// API proxy — the identity boundary (Production Hardening v1, Phases A–B).
+// API proxy — the identity boundary (Phases A–C).
 //
 //   Authentication: session cookie (browser) OR x-api-key (machine clients)
+//   Tenant context: session → user → org membership | api key → key's org
+//                   (NEVER from client request bodies — see R-invariant)
 //   CSRF:           mutating session-authenticated requests require X-Agent-Csrf
-//   Rate limiting:  read 120/min, write 20/min, login 10/min (per IP, in-memory;
-//                   move to a shared store for multi-instance deployments)
-//   Fail-closed:    auth required + no API key + no registered users → 503
+//   Rate limiting:  read 120/min, write 20/min, login 10/min (per IP, in-memory)
+//   Fail-closed:    auth required + no key + no users → 503
 //
-// Open routes: /api/health, /api/oauth/* (user-consent flows), /api/auth/login.
-//
-// Note: Next.js 16 proxy always runs on the Node.js runtime (DB access OK).
+// The proxy resolves the full TenantContext and forwards it via INTERNAL
+// headers (x-tenant-*) after stripping any client-supplied copies. Downstream
+// code wraps its work in withTenantRequest() which pins one RLS-bound
+// connection per org (src/lib/tenant/pool.ts).
 
 import { NextResponse, type NextRequest } from "next/server";
+import { createHash } from "crypto";
 import { getApiKey, isAuthRequired } from "@/lib/auth-policy";
-import { readSessionCookie } from "@/lib/auth/cookies";
-import { countUsers, validateSession } from "@/lib/auth/sessions";
+import { rawDbPool } from "@/lib/tenant/pool";
+import { resolveSessionContext } from "@/lib/tenant/resolve";
+import { TENANT_HEADERS } from "@/lib/tenant/request";
 
 const g = globalThis as typeof globalThis & {
   __rlBuckets?: Map<string, { tokens: number; ts: number }>;
@@ -45,12 +49,44 @@ async function hasAnyUser(): Promise<boolean> {
   if (uc && Date.now() - uc.at < 30_000) return uc.has;
   let has = false;
   try {
-    has = (await countUsers()) > 0;
+    const r = await rawDbPool.query("SELECT 1 FROM users LIMIT 1");
+    has = (r as { rows: unknown[] }).rows.length > 0;
   } catch {
     has = false;
   }
   g.__userCache = { at: Date.now(), has };
   return has;
+}
+
+interface TenantHeaders {
+  "x-tenant-org-id": string;
+  "x-tenant-user-id": string | null;
+  "x-tenant-role": string;
+}
+
+// session → user → primary org membership (identity plane: no RLS there)
+async function resolveSessionTenant(req: NextRequest): Promise<TenantHeaders | null> {
+  const ctx = await resolveSessionContext(req).catch(() => null);
+  if (!ctx) return null;
+  return {
+    "x-tenant-org-id": String(ctx.orgId),
+    "x-tenant-user-id": ctx.userId ? String(ctx.userId) : null,
+    "x-tenant-role": ctx.role,
+  };
+}
+
+// machine key → its org (stored keys) or the default org (env legacy key)
+async function resolveKeyTenant(key: string): Promise<TenantHeaders | null> {
+  const envKey = getApiKey();
+  if (envKey && key === envKey) {
+    return { "x-tenant-org-id": "1", "x-tenant-user-id": null, "x-tenant-role": "admin" };
+  }
+  const hash = createHash("sha256").update(key).digest("hex");
+  const r = await rawDbPool.query("SELECT org_id FROM api_keys WHERE key_hash = $1 LIMIT 1", [hash]);
+  const row = (r as { rows: { org_id: number }[] }).rows[0];
+  if (!row) return null;
+  await rawDbPool.query("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1", [hash]);
+  return { "x-tenant-org-id": String(row.org_id), "x-tenant-user-id": null, "x-tenant-role": "admin" };
 }
 
 export async function proxy(req: NextRequest) {
@@ -80,45 +116,60 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
+  let tenant: TenantHeaders;
+
   if (authRequired) {
     const key = getApiKey();
-
-    // 1. Machine clients (MCP / Telegram / scripts): x-api-key.
     const provided = req.headers.get("x-api-key");
+
     if (provided) {
-      if (!key || provided !== key) {
-        return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-      }
-      // key-authenticated requests pass (no CSRF for non-cookie auth)
+      // Machine clients (MCP / Telegram / scripts).
+      const t = key || provided ? await resolveKeyTenant(provided).catch(() => null) : null;
+      if (!t) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+      tenant = t;
     } else {
-      // 2. Browser: server-side session in an HttpOnly cookie.
-      const session = await validateSession(readSessionCookie(req)).catch(() => null);
-      if (!session) {
-        return NextResponse.json({ error: "unauthorized", message: "Login required" }, { status: 401 });
-      }
+      // Browser: server-side session → user → org.
+      const t = await resolveSessionTenant(req).catch(() => null);
+      if (!t) return NextResponse.json({ error: "unauthorized", message: "Login required" }, { status: 401 });
       // CSRF: mutating requests authenticated by cookie must carry the header.
       if (isWriteRoute(req) && req.headers.get("x-agent-csrf") !== "1") {
         return NextResponse.json({ error: "csrf", message: "Missing X-Agent-Csrf header" }, { status: 403 });
       }
+      tenant = t;
     }
 
-    // 3. Fail-closed: no key configured and no users → misconfiguration.
+    // Fail-closed: no key configured and no users → misconfiguration.
     if (!key && !(await hasAnyUser())) {
       return NextResponse.json(
         { error: "misconfigured", message: "Auth is required but no AGENT_API_KEY and no users exist." },
         { status: 503 }
       );
     }
+  } else {
+    // Development / sandbox mode: single default tenant.
+    tenant = { "x-tenant-org-id": "1", "x-tenant-user-id": null, "x-tenant-role": "admin" };
   }
 
   // General rate limits (applies in all modes).
   const write = isWriteRoute(req);
   const limit = write ? 20 : 120;
   if (!allow(`${ip}:${write ? "w" : "r"}`, limit)) {
-    return NextResponse.json({ error: "rate_limited", message: "Слишком много запросов — повторите через минуту." }, { status: 429, headers: { "Retry-After": "60" } });
+    return NextResponse.json(
+      { error: "rate_limited", message: "Слишком много запросов — повторите через минуту." },
+      { status: 429, headers: { "Retry-After": "60" } }
+    );
   }
 
-  return NextResponse.next();
+  // Forward the tenant via INTERNAL headers; strip any client-supplied copies.
+  const headers = new Headers(req.headers);
+  headers.delete(TENANT_HEADERS.orgId);
+  headers.delete(TENANT_HEADERS.userId);
+  headers.delete(TENANT_HEADERS.role);
+  headers.set(TENANT_HEADERS.orgId, tenant["x-tenant-org-id"]);
+  if (tenant["x-tenant-user-id"]) headers.set(TENANT_HEADERS.userId, tenant["x-tenant-user-id"]);
+  headers.set(TENANT_HEADERS.role, tenant["x-tenant-role"]);
+
+  return NextResponse.next({ request: { headers } });
 }
 
 export const config = { matcher: ["/api/:path*"] };

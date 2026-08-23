@@ -4,7 +4,7 @@
 // only through the standard pending-action confirmation flow.
 
 import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, currentTenant } from "@/db";
 import { recommendations } from "@/db/schema";
 import { fmtMoney } from "@/lib/format";
 import { PLATFORM_LABEL, type Platform, type PlatformStat } from "./types";
@@ -54,6 +54,7 @@ export async function persistBudgetShift(s: BudgetShiftSuggestion, periodDays: n
     await db
       .insert(recommendations)
       .values({
+        organizationId: currentTenant()?.orgId ?? 1,
         platform: s.from,
         type: "budget_shift",
         description,

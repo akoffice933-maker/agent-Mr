@@ -103,7 +103,11 @@ Google Ads и Авито: адаптеры готовы, остаются в san
 ```
 Пользователь (веб / Telegram / MCP)
         ↓
-Authentication: session cookie (HttpOnly) | x-api-key   →  Tenant → RBAC (Phases C/D)
+Authentication: session cookie (HttpOnly) | x-api-key (org-scoped machine key)
+        ↓
+Tenant isolation: session → user → org  +  Postgres RLS (FORCE, fail-closed)
+        ↓
+[Phase D: RBAC]  →  Policy Engine
         ↓
 AI Core: LLM tool calling (OpenRouter) → rule-based fallback
         ↓  structured intent: {tool, platforms, params}
@@ -199,6 +203,20 @@ docker compose --profile clients up --build     # + telegram-bot + mcp-server
 | `YANDEX_OAUTH_CLIENT_ID/SECRET` | prod | Яндекс.Директ (этап 4) |
 | `AVITO_CLIENT_ID/SECRET`, `AVITO_USER_ID` | prod | Авито Business API (этап 5) |
 | `TELEGRAM_BOT_TOKEN` | для бота | Token от @BotFather (этап 8) |
+
+### Multi-tenancy (Phase C)
+
+- Данные изолированы на уровне **Postgres RLS (FORCE)**: каждое приложение-соединение
+  работает в контексте одной организации (`app.org_id`); без контекста — 0 строк.
+- Tenant берётся только из server-side сессии / org-scoped machine key — никогда из тела запроса.
+- CLI:
+  - `npm run create-user -- <email> <password> [name]` — пользователь + membership в default org
+  - `npm run create-api-key -- [name]` — org-scoped ключ для MCP/Telegram (печатается один раз)
+- Миграции и сид выполняются привилегированным пользователем БД (BYPASSRLS),
+  приложение — под ролью, подчинённой RLS (`DATABASE_URL`).
+- Доказательство изоляции: E2E-сценарий двух организаций (17 проверок: кампании,
+  pending-действия 404 cross-tenant, machine keys, chat history, RLS fail-closed).
+- Phase D (RBAC: owner/admin/buyer/analyst/viewer) — следующий шаг; role уже в `org_members`.
 
 ## Подключение реальных площадок (production)
 
