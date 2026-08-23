@@ -33,6 +33,13 @@ export function Icon({ name, className = "h-4 w-4" }: IconProps) {
         <path d="M4 20V10M10 20V4M16 20v-8M21 20H3" />
       </>
     ),
+    target: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <circle cx="12" cy="12" r="5" />
+        <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+      </>
+    ),
     scroll: (
       <>
         <path d="M8 3h11a1 1 0 0 1 1 1v13" />

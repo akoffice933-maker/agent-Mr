@@ -11,6 +11,7 @@ const NAV = [
   { href: "/agent", label: "AI-агент", icon: "bot" },
   { href: "/campaigns", label: "Кампании", icon: "layers" },
   { href: "/analytics", label: "Аналитика", icon: "chart" },
+  { href: "/report", label: "Отчёт", icon: "target" },
   { href: "/audit", label: "Журнал аудита", icon: "scroll" },
   { href: "/safety", label: "Безопасность", icon: "shield" },
 ];
@@ -109,7 +110,7 @@ export function Sidebar() {
       <div className="space-y-3 px-4 pb-5">
         <SafetyStatus />
         <div className="px-1 text-[10px] leading-relaxed text-fog">
-          Демо-режим · адаптеры: google-ads-api-agent, yadirect-agent, avito-mcp · AI Core: OpenRouter
+          Адаптеры: Google Ads API · Direct API v5 · Avito Business API · AI Core: OpenRouter (fallback: rule-based)
         </div>
       </div>
     </aside>
