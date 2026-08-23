@@ -1,8 +1,20 @@
+import { eq, and, gte, sql } from "drizzle-orm";
+import { db } from "@/db";
+import { accounts, campaigns, metricsDaily, recommendations, settings } from "@/db/schema";
+import { dateNDaysAgo } from "@/lib/format";
 import { Chat } from "@/components/chat";
 import { Icon } from "@/components/icons";
 import { Card, SectionTitle } from "@/components/ui";
+import { OnboardBanner } from "@/components/onboard-banner";
+import type { Platform } from "@/lib/agent/types";
 
 export const dynamic = "force-dynamic";
+
+const PLATFORM_NAMES: Record<Platform, string> = {
+  google: "Google Ads",
+  yandex: "Яндекс.Директ",
+  avito: "Авито",
+};
 
 const UNIFIED_TOOLS: { name: string; desc: string; platforms: ("g" | "y" | "a")[] }[] = [
   { name: "get_spend_report", desc: "Сводный расход за период", platforms: ["g", "y", "a"] },
@@ -21,13 +33,48 @@ const UNIFIED_TOOLS: { name: string; desc: string; platforms: ("g" | "y" | "a")[
 
 const DOT: Record<string, string> = { g: "bg-google", y: "bg-yandex", a: "bg-avito" };
 
-export default function AgentPage() {
+export default async function AgentPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = await searchParams;
+  const onboard = typeof sp.onboard === "string" && ["google", "yandex", "avito"].includes(sp.onboard) ? (sp.onboard as Platform) : null;
+
+  let banner: React.ReactNode = null;
+  if (onboard) {
+    const acc = (await db.select().from(accounts).where(eq(accounts.platform, onboard)))[0];
+    const prod = acc?.mode === "production";
+    const openRecs = (await db.select().from(recommendations).where(eq(recommendations.status, "open"))).length;
+    const readOnlyRow = (await db.select().from(settings).where(eq(settings.key, "read_only")))[0];
+    const readOnly = readOnlyRow ? readOnlyRow.value === true : true;
+    const from = dateNDaysAgo(6);
+    const m = (
+      await db
+        .select({ spend: sql<number>`coalesce(sum(${metricsDaily.spend}), 0)` })
+        .from(metricsDaily)
+        .innerJoin(campaigns, eq(metricsDaily.campaignId, campaigns.id))
+        .where(and(eq(campaigns.platform, onboard), gte(metricsDaily.date, from)))
+    )[0];
+    const camps = await db.select({ status: campaigns.status }).from(campaigns).where(eq(campaigns.platform, onboard));
+    if (prod) {
+      banner = (
+        <OnboardBanner
+          platform={onboard}
+          platformName={PLATFORM_NAMES[onboard]}
+          campaignsCount={camps.length}
+          activeCount={camps.filter((c) => c.status === "active").length}
+          spend7d={Number(m?.spend ?? 0)}
+          openRecs={openRecs}
+          readOnly={readOnly}
+        />
+      );
+    }
+  }
+
   return (
-    <div className="rise-in flex h-[calc(100vh-3rem)] flex-col">
+    <div className="rise-in flex h-[calc(100vh-3rem)] flex-col overflow-y-auto">
       <SectionTitle
         title="AI-агент"
         sub="Единая точка входа: естественный язык → 12 унифицированных команд → адаптеры платформ"
       />
+      {banner}
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_300px]">
         <Card className="flex min-h-0 flex-col p-4">
           <Chat />
