@@ -8,10 +8,20 @@ import { db } from "./index";
 import { organizations, orgMembers, users } from "./schema";
 import { hashPassword } from "@/lib/auth/password";
 
+const ROLES = ["owner", "admin", "media_buyer", "analyst", "viewer"] as const;
+
 async function main() {
-  const [email, password, name] = process.argv.slice(2);
+  const [email, password, name, ...rest] = process.argv.slice(2);
+  let role: (typeof ROLES)[number] = "admin";
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--role") role = (rest[++i] ?? "admin") as (typeof ROLES)[number];
+  }
   if (!email || !password) {
-    console.error("Usage: npm run create-user -- <email> <password> [name]");
+    console.error("Usage: npm run create-user -- <email> <password> [name] [--role owner|admin|media_buyer|analyst|viewer]");
+    process.exit(1);
+  }
+  if (!ROLES.includes(role)) {
+    console.error(`Bad role '${role}' (one of: ${ROLES.join(", ")})`);
     process.exit(1);
   }
   if (password.length < 8) {
@@ -42,8 +52,8 @@ async function main() {
   // membership in the default org (idempotent)
   const member = (await db.select().from(orgMembers).where(eq(orgMembers.userId, userId)))[0];
   if (!member) {
-    await db.insert(orgMembers).values({ orgId: org.id, userId, role: "admin" });
-    console.log(`✓ Membership: org #${org.id} (role admin)`);
+    await db.insert(orgMembers).values({ orgId: org.id, userId, role });
+    console.log(`✓ Membership: org #${org.id} (role ${role})`);
   } else {
     console.log(`✓ Membership already exists (org #${member.orgId})`);
   }

@@ -3,6 +3,7 @@ import { getSettings, updateSettings, writeAudit } from "@/lib/agent/safety";
 import { accountMode, hasToken, setAccountMode } from "@/lib/adapters/oauth-store";
 import type { Platform } from "@/lib/agent/types";
 import { withTenantRequest } from "@/lib/tenant/request";
+import { requireAction } from "@/lib/tenant/route-authz";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,8 @@ export async function POST(req: Request) {
       const body = await req.json();
       // Switch an account back to sandbox (or production) mode from the UI.
       if (typeof body.platform === "string" && ["google", "yandex", "avito"].includes(body.platform) && ["sandbox", "production"].includes(body.mode)) {
+        const denied = requireAction(req, "credentials");
+        if (denied) return denied;
         await setAccountMode(body.platform as Platform, body.mode as "sandbox" | "production");
         await writeAudit({
           actor: "ui",
@@ -55,6 +58,8 @@ export async function POST(req: Request) {
         });
         return NextResponse.json({ ok: true, platform: body.platform, mode: body.mode });
       }
+      const denied = requireAction(req, "policy");
+      if (denied) return denied;
       const s = await updateSettings({
         dryRun: typeof body.dryRun === "boolean" ? body.dryRun : undefined,
         readOnly: typeof body.readOnly === "boolean" ? body.readOnly : undefined,

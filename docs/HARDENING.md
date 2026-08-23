@@ -152,9 +152,44 @@ Definition of Done — закрыто:
 Операционное: миграции/сид выполняются привилегированным пользователем БД
 (BYPASSRLS, напр. `dbowner`), приложение — под `appuser` (подчиняется RLS).
 
-## Фаза D — RBAC
+## Фаза D — RBAC ✅ (выполнена)
 
-## Фаза D — RBAC
+> Реализовано как центральная модель решения, а не middleware с `if (role === …)`:
+>
+> ```ts
+> authorize({ role, action, context }) → ALLOW | DENY | REQUIRE_APPROVAL | LIMITED
+> ```
+>
+> Финальное решение = **Role + Tenant ownership (RLS) + Action + Resource + Risk**.
+
+Реализация:
+
+1. **`src/lib/agent/rbac.ts`** — матрица 5 ролей × 10 действий + риск-мерные:
+   - `viewer` / `analyst`: read + recommend, все execute — DENY
+   - `media_buyer`: execute ALLOW, но — ставки: ≤±10% ALLOW, ±10–25% **LIMITED**
+     (кап применяется к предпросмотру), >±25% DENY; бюджет/крупные изменения —
+     **REQUIRE_APPROVAL**; credentials/policy — DENY
+   - `admin`: всё, кроме manage_members; budget delta > 10 000 ₽ — REQUIRE_APPROVAL
+   - `owner`: всё, без риск-эскалаций
+2. **Policy Engine** (`policy.ts`) теперь принимает `role` + `risk` и возвращает
+   `require_approval` с `riskNote` (виден в предпросмотре) и `bidPercentCap`
+   (clamp ставок **до** построения предпросмотра).
+3. **Точки применения**:
+   - agent flow (`runAgent`): pre-dispatch (role+risk) и post-dispatch (+costDaily);
+   - approve (`resolvePending`): роль утверждающего проверяется на действие класса;
+   - роуты: `/api/campaigns/action` (execute_*), `/api/settings` (policy / credentials),
+     `/api/oauth/*/start` (credentials) → 403 с причиной.
+4. **CLI/UI**: `npm run create-user -- <email> <password> [name] --role <role>`;
+   роль видна в UserMenu сайдбара.
+5. **Покрытие**: 11 unit-тестов матрицы + риск-мерных; E2E 20/20 (viewer/analyst/
+   media_buyer/admin: DENY-сообщения, 403 на settings/oauth, LIMITED-кап ставок
+   в трейсе, viewer не может approve чужое действие).
+
+Доказанный инвариант: **LLM не принимает security decisions (R1)** — её
+параметры (например, «+50%» для media_buyer) могут быть заблокированы или
+скапаны политикой независимо от намерения.
+
+## Фаза D (архив) — RBAC
 
 Матрица ролей (B2B-минимум):
 

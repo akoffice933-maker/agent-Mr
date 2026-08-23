@@ -13,9 +13,11 @@ import {
 } from "@/db/schema";
 import { fmtMoney } from "@/lib/format";
 import { resolveIntent, WRITE_TOOLS } from "./router";
+import { authorize, type Role } from "./rbac";
+import type { TenantContext } from "@/lib/tenant/pool";
 import type { ParsedIntent } from "./router";
 import { getSettings, writeAudit } from "./safety";
-import { evaluatePolicy } from "./policy";
+import { evaluatePolicy, toolToAction } from "./policy";
 import type { SafetySettings } from "./safety";
 import * as tools from "./tools";
 import type { AgentMeta, ChatMessageRow, Platform, ResultPayload, TraceStep } from "./types";
@@ -48,6 +50,19 @@ function orgId(): number {
   return currentTenant()?.orgId ?? 1;
 }
 
+/** Risk context known before dispatch (from the parsed intent). */
+function preDispatchRisk(intent: ParsedIntent): { costDaily?: number; bidChangePercent?: number; budgetDelta?: number } {
+  const risk: { costDaily?: number; bidChangePercent?: number; budgetDelta?: number } = {};
+  if (intent.tool === "create_campaign" && typeof intent.params.budget === "number") {
+    risk.costDaily = intent.params.budget;
+    risk.budgetDelta = intent.params.budget;
+  }
+  if (intent.tool === "adjust_bids" && typeof intent.params.percent === "number") {
+    risk.bidChangePercent = intent.params.direction === "down" ? -intent.params.percent : intent.params.percent;
+  }
+  return risk;
+}
+
 export function serializeMessage(row: {
   id: number;
   role: string;
@@ -74,11 +89,12 @@ async function insertAgentMessage(content: string, meta: AgentMeta | null): Prom
   return serializeMessage(row);
 }
 
-export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
+export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?: TenantContext) {
   const started = Date.now();
   const text = raw.trim();
   const userRow = (await db.insert(messages).values({ organizationId: orgId(), role: "user", content: text }).returning())[0];
 
+  const role: Role = (ctx?.role as Role) ?? "admin";
   const session = await buildSessionContext();
   const resolved = await resolveIntent(text, session);
   const intent = resolved.intent;
@@ -123,7 +139,9 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
   let pendingId: number | undefined;
 
   // Policy Engine — pre-dispatch decision (the LLM never executes anything directly).
-  const prePolicy = await evaluatePolicy({ tool: intent.tool, isWrite, settings });
+  // Role + risk are evaluated here; the LLM's parameters can never override this.
+  const preRisk = preDispatchRisk(intent);
+  const prePolicy = await evaluatePolicy({ tool: intent.tool, isWrite, settings, role, risk: preRisk });
 
   if (prePolicy.action === "block") {
     trace.push({ label: "Policy Engine: действие заблокировано", detail: prePolicy.reason, status: "block" });
@@ -131,17 +149,26 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
     auditStatus = "blocked";
     auditSummary = `Блокировка ${intent.tool}: политика безопасности`;
   } else {
+    // RBAC LIMITED: clamp the bid change to the role cap before the preview is built.
+    if (isWrite && prePolicy.action === "require_approval" && prePolicy.bidPercentCap != null && intent.tool === "adjust_bids") {
+      const cap = prePolicy.bidPercentCap;
+      intent.params.percent = Math.abs(cap);
+      intent.params.direction = cap > 0 ? "up" : "down";
+      trace.push({ label: `RBAC: изменение ставки ограничено до ±${Math.abs(cap)}% для роли`, status: "warn" });
+    }
+
     const out = await dispatch(intent.tool, intent, settings);
     result = out.result;
     auditSummary = out.auditSummary;
 
     if (out.pending) {
-      // Policy Engine — full decision including the action's added daily cost.
+      // Policy Engine — full decision including role, risk and added daily cost.
       const costDaily = out.pending.costDaily ?? 0;
-      const policy = await evaluatePolicy({ tool: intent.tool, isWrite: true, settings, costDaily });
+      const postRisk = { ...preDispatchRisk(intent), costDaily };
+      const policy = await evaluatePolicy({ tool: intent.tool, isWrite: true, settings, role, costDaily, risk: postRisk });
 
       if (policy.action === "block") {
-        trace.push({ label: "Policy Engine: превышен лимит расхода", detail: policy.reason, status: "block" });
+        trace.push({ label: "Policy Engine: действие отклонено", detail: policy.reason, status: "block" });
         result = {
           ...(result as Extract<ResultPayload, { kind: "preview" }>),
           verdict: "blocked",
@@ -149,9 +176,10 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat") {
         };
         auditStatus = "blocked";
       } else {
+        const riskNote = policy.action === "require_approval" ? policy.riskNote : undefined;
         trace.push({
           label: `Policy Engine: ${policy.note ?? "требуется подтверждение"}`,
-          detail: "Изменения не применяются без явного подтверждения",
+          detail: riskNote ?? "Изменения не применяются без явного подтверждения",
           status: "warn",
         });
         if (costDaily > 0) {
@@ -296,7 +324,7 @@ export async function resolvePending(
   id: number,
   decision: "approve" | "reject",
   actor = "chat",
-  ctx?: { orgId: number }
+  ctx?: TenantContext
 ) {
   const org = ctx?.orgId ?? orgId();
   // Tenant check (defense in depth on top of RLS): the action must belong to
@@ -307,6 +335,22 @@ export async function resolvePending(
   if (!pending || pending.status !== "pending") {
     // 404-equivalent: do not leak that another org's action exists.
     return null;
+  }
+
+  // RBAC: the approver's role must be allowed to execute this action class.
+  if (decision === "approve") {
+    const approverRole: Role = (ctx?.role as Role) ?? "admin";
+    const authz = authorize({ role: approverRole, action: toolToAction(pending.tool) });
+    if (authz.decision === "DENY") {
+      return insertAgentMessage(`Не могу применить действие: ${authz.reason}. Попросите пользователя с ролью «Медиа-байер» или выше.`, {
+        tool: "apply_pending",
+        toolLabel: pending.tool,
+        platforms: [],
+        trace: [{ label: `RBAC: подтверждение запрещено для роли`, detail: authz.reason, status: "block" }],
+        durationMs: 60,
+        result: { kind: "text", text: authz.reason ?? "Доступ запрещён." },
+      });
+    }
   }
 
   if (decision === "reject") {
@@ -334,7 +378,7 @@ export async function resolvePending(
 
   // Policy Engine re-check at approval time: limits may have been exhausted since the preview.
   const costDaily = Number(pending.costDaily ?? 0);
-  const approvalPolicy = await evaluatePolicy({ tool: pending.tool, isWrite: true, settings: await getSettings(), costDaily });
+  const approvalPolicy = await evaluatePolicy({ tool: pending.tool, isWrite: true, settings: await getSettings(), role: (ctx?.role as Role) ?? "admin", costDaily });
   if (approvalPolicy.action === "block") {
     await db.update(pendingActions).set({ status: "rejected" }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending")));
     await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "blocked", summary: `Отклонено при подтверждении #${id}: ${approvalPolicy.reason}` });

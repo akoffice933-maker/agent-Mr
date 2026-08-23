@@ -91,7 +91,7 @@ function UserMenu() {
       </span>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[11px] font-semibold text-snow">{auth.user.name ?? auth.user.email}</div>
-        <div className="truncate text-[10px] text-fog">{auth.user.email}</div>
+        <div className="truncate text-[10px] text-fog">{auth.user.email} · {auth.user.role}</div>
       </div>
       <button
         onClick={logout}

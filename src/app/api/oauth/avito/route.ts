@@ -3,6 +3,8 @@ import { avitoFetchToken } from "@/lib/adapters/avito/client";
 import { setAccountMode } from "@/lib/adapters/oauth-store";
 import { getAdapter } from "@/lib/adapters";
 import { withTenant } from "@/lib/tenant/pool";
+import { requireActionRole } from "@/lib/tenant/route-authz";
+import { parseRole } from "@/lib/agent/rbac";
 import { resolveRequestContext } from "@/lib/tenant/resolve";
 import type { TenantContext } from "@/lib/tenant/pool";
 
@@ -19,6 +21,8 @@ export async function GET(req: Request) {
     if (url.searchParams.get("start")) {
       const ctx = (await resolveRequestContext(req)) as TenantContext | null;
       if (!ctx) return NextResponse.redirect(`${errTo}?oauth=error&platform=avito`);
+      const denied = requireActionRole(parseRole(ctx.role), "credentials");
+      if (denied) return denied;
       return await withTenant(ctx, async () => {
         await avitoFetchToken();
         await setAccountMode("avito", "production");

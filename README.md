@@ -216,7 +216,24 @@ docker compose --profile clients up --build     # + telegram-bot + mcp-server
   приложение — под ролью, подчинённой RLS (`DATABASE_URL`).
 - Доказательство изоляции: E2E-сценарий двух организаций (17 проверок: кампании,
   pending-действия 404 cross-tenant, machine keys, chat history, RLS fail-closed).
-- Phase D (RBAC: owner/admin/buyer/analyst/viewer) — следующий шаг; role уже в `org_members`.
+### RBAC (Phase D)
+
+Роли: `owner` · `admin` · `media_buyer` · `analyst` · `viewer` (в `org_members`).
+
+| Действие | viewer | analyst | media_buyer | admin | owner |
+|---|---|---|---|---|---|
+| Чтение / отчёты / аудит | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Рекомендации | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Пауза / запуск кампаний | — | — | ✅ | ✅ | ✅ |
+| Ставки | — | — | ≤±10% ✅ · ±10–25% кап · >±25% — | ✅ | ✅ |
+| Бюджеты / создание / рекомендации-применение | — | — | ✅ подтверждение | ✅ | ✅ |
+| Подключение площадок (OAuth) | — | — | — | ✅ | ✅ |
+| Safety-настройки | — | — | — | ✅ | ✅ |
+
+Решение принимает центральная функция `authorize({role, action, context})`
+(ALLOW / DENY / REQUIRE_APPROVAL / LIMITED) внутри Policy Engine — LLM её
+параметры не могут пересилить (правило R1). Крупные изменения (>10 000 ₽
+бюджет-дельта, >10% ставки для media_buyer) получают риск-флаг в предпросмотре.
 
 ## Подключение реальных площадок (production)
 

@@ -10,6 +10,8 @@ vi.mock("@/lib/agent/safety", async () => {
 import { checkBudgetHeadroom } from "@/lib/agent/safety";
 const mockHeadroom = checkBudgetHeadroom as unknown as ReturnType<typeof vi.fn>;
 
+const baseRole = "admin" as const;
+
 const base: SafetySettings = {
   dryRun: true,
   readOnly: false,
@@ -26,24 +28,24 @@ beforeEach(() => {
 
 describe("Policy Engine", () => {
   it("read operations pass without restrictions", async () => {
-    const d = await evaluatePolicy({ tool: "get_spend_report", isWrite: false, settings: base });
+    const d = await evaluatePolicy({ tool: "get_spend_report", isWrite: false, settings: base, role: baseRole });
     expect(d.action).toBe("allow");
   });
 
   it("read-only mode blocks ALL writes (even with zero cost)", async () => {
-    const d = await evaluatePolicy({ tool: "adjust_bids", isWrite: true, settings: { ...base, readOnly: true }, costDaily: 0 });
+    const d = await evaluatePolicy({ tool: "adjust_bids", isWrite: true, settings: { ...base, readOnly: true }, costDaily: 0, role: baseRole });
     expect(d.action).toBe("block");
     if (d.action === "block") expect(d.reason).toContain("только чтение");
   });
 
   it("writes without extra cost require approval (dry-run preview)", async () => {
-    const d = await evaluatePolicy({ tool: "pause_low_ctr_campaigns", isWrite: true, settings: base, costDaily: 0 });
+    const d = await evaluatePolicy({ tool: "pause_low_ctr_campaigns", isWrite: true, settings: base, role: baseRole, costDaily: 0 });
     expect(d.action).toBe("require_approval");
     if (d.action === "require_approval") expect(d.note).toContain("предпросмотр");
   });
 
   it("writes that add spend pass limits → require approval", async () => {
-    const d = await evaluatePolicy({ tool: "create_campaign", isWrite: true, settings: base, costDaily: 5000 });
+    const d = await evaluatePolicy({ tool: "create_campaign", isWrite: true, settings: base, role: baseRole, costDaily: 5000 });
     expect(d.action).toBe("require_approval");
     expect(mockHeadroom).toHaveBeenCalledWith(5000);
   });
@@ -57,7 +59,7 @@ describe("Policy Engine", () => {
       limit: 50000,
       reason: "Дневной лимит 50 000 ₽ будет превышен.",
     });
-    const d = await evaluatePolicy({ tool: "create_campaign", isWrite: true, settings: base, costDaily: 5000 });
+    const d = await evaluatePolicy({ tool: "create_campaign", isWrite: true, settings: base, role: baseRole, costDaily: 5000 });
     expect(d.action).toBe("block");
     if (d.action === "block") expect(d.reason).toContain("лимит");
   });
@@ -72,7 +74,7 @@ describe("Policy Engine", () => {
       reason: "Недельный лимит превышен.",
     });
     // same call shape used by resolvePending at approval time
-    const d = await evaluatePolicy({ tool: "promote_low_view_listings", isWrite: true, settings: base, costDaily: 600 });
+    const d = await evaluatePolicy({ tool: "promote_low_view_listings", isWrite: true, settings: base, role: baseRole, costDaily: 600 });
     expect(d.action).toBe("block");
   });
 });

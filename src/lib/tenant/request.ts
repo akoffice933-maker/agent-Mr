@@ -7,6 +7,12 @@
 
 import type { TenantContext } from "./pool";
 import { withTenant } from "./pool";
+import { parseRole, type Role } from "@/lib/agent/rbac";
+
+/** Role for route-level RBAC (set by the proxy from membership / machine key). */
+export function roleFromHeaders(h: Headers): Role {
+  return parseRole(h.get(TENANT_HEADERS.role));
+}
 
 export const TENANT_HEADERS = {
   orgId: "x-tenant-org-id",
