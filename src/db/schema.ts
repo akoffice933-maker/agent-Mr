@@ -122,9 +122,32 @@ export const pendingActions = pgTable("pending_actions", {
   params: jsonb("params"),
   preview: jsonb("preview"),
   costDaily: doublePrecision("cost_daily"), // extra ₽/day the action adds, for limit re-check on approve
-  status: text("status").notNull().default("pending"), // pending | applied | rejected
+  // Lifecycle: pending → executing → verified | failed | rejected.
+  status: text("status").notNull().default("pending"),
+  idempotencyKey: text("idempotency_key").unique(),
+  attempts: integer("attempts").notNull().default(0),
+  providerResponse: jsonb("provider_response"), // raw provider response for the write
+  readback: jsonb("readback"), // state read back from the provider after the write
+  lastError: text("last_error"),
+  executedAt: timestamp("executed_at"),
+  verifiedAt: timestamp("verified_at"),
   source: text("source").notNull().default("chat"),
 });
+
+// ── OAuth state (DB-backed, multi-instance safe) ───────────────────────────
+export const oauthStates = pgTable(
+  "oauth_states",
+  {
+    state: text("state").primaryKey(),
+    organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    userId: integer("user_id"),
+    platform: text("platform").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    consumedAt: timestamp("consumed_at"),
+  },
+  (t) => [index("oauth_states_org_idx").on(t.organizationId)]
+);
 
 // ── Users (Phase B: identity foundation for multi-tenancy) ─────────────────
 export const users = pgTable("users", {
@@ -208,7 +231,7 @@ export const oauthTokens = pgTable(
     extra: jsonb("extra"),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("oauth_tokens_platform_idx").on(t.platform)]
+  (t) => [uniqueIndex("oauth_tokens_org_platform_idx").on(t.organizationId, t.platform)]
 );
 
 // ── Safety settings (key/value) ────────────────────────────────────────────

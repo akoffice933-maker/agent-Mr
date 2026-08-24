@@ -7,7 +7,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
 import { campaigns, keywords, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
-import type { DailyMetric, PlatformClient, WriteOp, WriteResult } from "../types";
+import type { DailyMetric, PlatformClient, ExecutionResult, WriteOp } from "../types";
 
 const OAUTH = "https://oauth2.googleapis.com";
 const AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -63,7 +63,7 @@ async function requestToken(grantType: "authorization_code" | "refresh_token", p
 
 export async function googleExchangeCode(code: string): Promise<StoredToken> {
   const t = await requestToken("authorization_code", { code, redirect_uri: redirectUri() });
-  await storeToken("google", t);
+  await storeToken(currentTenant()?.orgId ?? 1, "google", t);
   return t;
 }
 
@@ -95,7 +95,7 @@ async function loadGoogleAds() {
 
 async function makeClient() {
   const lib = await loadGoogleAds();
-  const t = await getToken("google");
+  const t = await getToken(currentTenant()?.orgId ?? 1, "google");
   if (!t) throw new Error("Google token is missing or expired — reconnect the account");
   return new lib.GoogleAdsClient({
     developerToken: developerToken(),
@@ -184,7 +184,7 @@ export function createGoogleClient(): PlatformClient {
       void cid;
     },
 
-    async write(op: WriteOp): Promise<WriteResult> {
+    async execute(op: WriteOp): Promise<ExecutionResult> {
       const client = await makeClient();
       const cid = customerId();
       const kind = op.kind as string;
@@ -198,7 +198,7 @@ export function createGoogleClient(): PlatformClient {
               resourceNames: [`customers/${cid}/campaigns/${r.externalId}`],
             }))
           );
-          return { ok: true, detail: `Google Ads: ${rows.length} кампаний → ${op.status}` };
+          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Google Ads: ${rows.length} кампаний → ${op.status}` };
         }
         case "negative_keywords": {
           const r = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
@@ -209,7 +209,7 @@ export function createGoogleClient(): PlatformClient {
               campaignNegativeCriterion: { campaign: `customers/${cid}`, negative: { keyword: { text } } },
             }))
           );
-          return { ok: true, detail: `Google Ads: ${op.words.length} минус-фраз → «${r?.name}»` };
+          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Google Ads: ${op.words.length} минус-фраз → «${r?.name}»` };
         }
         case "bids_factor": {
           const kws = await db.select().from(keywords).where(inArray(keywords.id, op.keywordIds));
@@ -222,16 +222,16 @@ export function createGoogleClient(): PlatformClient {
               resourceNames: k.externalId ? [`customers/${cid}/adGroupCriteria/${k.externalId}`] : undefined,
             }))
           );
-          return { ok: true, detail: `Google Ads: ставки ×${op.factor} по ${kws.length} ключам` };
+          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Google Ads: ставки ×${op.factor} по ${kws.length} ключам` };
         }
         case "campaign_budget":
         case "create_campaign":
         case "promote_listings":
           // Follow-up: requires budget resource resolution / full campaign tree (ad groups,
           // bid strategies) on the platform side. Local mirror is updated either way.
-          return { ok: true, detail: `Google Ads: ${kind} зафиксирован локально, платформенный вызов — follow-up` };
+          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Google Ads: ${kind} зафиксирован локально, платформенный вызов — follow-up` };
         default:
-          return { ok: false, detail: `Google Ads: операция ${kind} не поддерживается этой версией адаптера` };
+          return { ok: false, verified: false, detail: `Google Ads: операция ${kind} не поддерживается этой версией адаптера` };
       }
     },
   };

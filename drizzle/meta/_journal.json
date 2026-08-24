@@ -5,43 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1787508651896,
-      "tag": "0000_tidy_typhoid_mary",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1787509503563,
-      "tag": "0001_oauth_tokens",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1787521016802,
-      "tag": "0002_users_sessions",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1787522159665,
-      "tag": "0003_tenant_schema",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1787522218577,
-      "tag": "0004_tenant_isolation",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1787524585791,
-      "tag": "0005_api_key_lifecycle",
+      "when": 1787563630488,
+      "tag": "0000_exotic_the_enforcers",
       "breakpoints": true
     }
   ]

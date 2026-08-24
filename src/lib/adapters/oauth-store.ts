@@ -1,5 +1,5 @@
 // Encrypted OAuth token store (ТЗ 4.1: oauth_tokens, шифрование на уровне приложения).
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
 import { accounts, oauthTokens } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/crypto";
@@ -22,11 +22,11 @@ export function registerRefresher(platform: Platform, fn: TokenRefresher): void 
   refreshers.set(platform, fn);
 }
 
-export async function storeToken(platform: Platform, t: StoredToken): Promise<void> {
+export async function storeToken(org: number, platform: Platform, t: StoredToken): Promise<void> {
   await db
     .insert(oauthTokens)
     .values({
-      organizationId: currentTenant()?.orgId ?? 1,
+      organizationId: org,
       platform,
       accessToken: encrypt(t.accessToken),
       refreshToken: t.refreshToken ? encrypt(t.refreshToken) : null,
@@ -35,7 +35,7 @@ export async function storeToken(platform: Platform, t: StoredToken): Promise<vo
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: oauthTokens.platform,
+      target: [oauthTokens.organizationId, oauthTokens.platform],
       set: {
         accessToken: encrypt(t.accessToken),
         refreshToken: t.refreshToken ? encrypt(t.refreshToken) : null,
@@ -46,8 +46,11 @@ export async function storeToken(platform: Platform, t: StoredToken): Promise<vo
     });
 }
 
-export async function getToken(platform: Platform, allowRefresh = true): Promise<StoredToken | null> {
-  const row = (await db.select().from(oauthTokens).where(eq(oauthTokens.platform, platform)))[0];
+export async function getToken(org: number, platform: Platform, allowRefresh = true): Promise<StoredToken | null> {
+  // Tenant-scoped: each organization has its own connection per platform.
+  const row = (
+    await db.select().from(oauthTokens).where(and(eq(oauthTokens.organizationId, org), eq(oauthTokens.platform, platform)))
+  )[0];
   if (!row) return null;
 
   let token: StoredToken = {
@@ -65,7 +68,7 @@ export async function getToken(platform: Platform, allowRefresh = true): Promise
     if (refresher) {
       try {
         token = await refresher(token);
-        await storeToken(platform, token);
+        await storeToken(org, platform, token);
         return token;
       } catch (e) {
         console.error(`[oauth-store] refresh failed for ${platform}:`, (e as Error).message);
@@ -77,8 +80,10 @@ export async function getToken(platform: Platform, allowRefresh = true): Promise
   return expired ? null : token;
 }
 
-export async function hasToken(platform: Platform): Promise<boolean> {
-  return (await db.select({ id: oauthTokens.id }).from(oauthTokens).where(eq(oauthTokens.platform, platform))).length > 0;
+export async function hasToken(org: number, platform: Platform): Promise<boolean> {
+  return (
+    await db.select({ id: oauthTokens.id }).from(oauthTokens).where(and(eq(oauthTokens.organizationId, org), eq(oauthTokens.platform, platform)))
+  ).length > 0;
 }
 
 export async function accountMode(platform: Platform): Promise<"sandbox" | "production"> {
@@ -93,5 +98,6 @@ export async function setAccountMode(platform: Platform, mode: "sandbox" | "prod
 /** Production mode is available when the account is in production AND a (refreshable) token exists. */
 export async function isProduction(platform: Platform): Promise<boolean> {
   if ((await accountMode(platform)) !== "production") return false;
-  return Boolean(await getToken(platform));
+  const org = currentTenant()?.orgId ?? 1;
+  return Boolean(await getToken(org, platform));
 }

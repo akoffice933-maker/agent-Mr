@@ -121,7 +121,7 @@ async function main() {
         accountId: accId,
         platform: spec.platform,
         kind: spec.kind,
-        externalId: `${spec.platform === "google" ? "gads" : spec.platform === "yandex" ? "ydx" : "avt"}-${10000 + i * 37}`,
+        externalId: spec.platform === "yandex" ? String(10000 + i * 37) : `${spec.platform === "google" ? "gads" : "avt"}-${10000 + i * 37}`,
         name: spec.name,
         status: spec.status ?? "active",
         budgetDaily: spec.budget,

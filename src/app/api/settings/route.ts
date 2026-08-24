@@ -3,6 +3,7 @@ import { getSettings, updateSettings, writeAudit } from "@/lib/agent/safety";
 import { accountMode, hasToken, setAccountMode } from "@/lib/adapters/oauth-store";
 import type { Platform } from "@/lib/agent/types";
 import { withTenantRequest } from "@/lib/tenant/request";
+import { currentTenant } from "@/lib/tenant/pool";
 import { requireAction } from "@/lib/tenant/route-authz";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +28,7 @@ export async function GET(req: Request) {
       const platforms = (["google", "yandex", "avito"] as Platform[]).map(async (p) => ({
         platform: p,
         mode: await accountMode(p),
-        token: await hasToken(p),
+        token: await hasToken(currentTenant()?.orgId ?? 1, p),
         configured: platformConfigured(p),
       }));
       return NextResponse.json({ ...s, platforms: await Promise.all(platforms) });

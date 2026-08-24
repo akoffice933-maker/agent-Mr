@@ -294,6 +294,13 @@ async function llmResolveIntent(text: string, ctx: SessionContext): Promise<Pars
     case "create_campaign":
       if (typeof args.name === "string" && args.name.trim()) params.name = args.name.trim();
       if (typeof args.budget === "number") params.budget = Math.min(500000, Math.max(100, args.budget));
+      if (typeof args.url === "string") params.url = args.url;
+      if (typeof args.ad_group_name === "string") params.adGroupName = args.ad_group_name;
+      if (typeof args.title === "string") params.title = args.title;
+      if (typeof args.text === "string") params.text = args.text;
+      if (Array.isArray(args.keywords)) params.keywords = args.keywords.map(String).slice(0, 1000);
+      if (Array.isArray(args.negative_keywords)) params.negativeKeywords = args.negative_keywords.map(String).slice(0, 100);
+      if (Array.isArray(args.region_ids)) params.regionIds = args.region_ids.map(Number);
       break;
     case "list_campaigns":
       params.status = ["all", "active", "paused"].includes(args.status as string) ? (args.status as string) : "all";

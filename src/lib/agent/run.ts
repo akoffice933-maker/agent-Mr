@@ -1,6 +1,7 @@
 // Agent core: intent (LLM → rules) → adapter sync → tool routing → safety layer → audit → chat persistence.
 
-import { and, eq, inArray } from "drizzle-orm";
+import { createHash } from "crypto";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
 import {
   accounts,
@@ -24,7 +25,7 @@ import type { AgentMeta, ChatMessageRow, Platform, ResultPayload, TraceStep } fr
 import { PLATFORM_LABEL } from "./types";
 import { buildSessionContext } from "./session-context";
 import { persistBudgetShift, suggestBudgetShift } from "./cross-platform-advisor";
-import { syncAdapters, writeAdapters } from "@/lib/adapters";
+import { executeAdapters, syncAdapters } from "@/lib/adapters";
 import type { WriteOp } from "@/lib/adapters/types";
 
 const TOOL_DESC: Record<string, string> = {
@@ -48,6 +49,11 @@ const TOOL_DESC: Record<string, string> = {
 
 function orgId(): number {
   return currentTenant()?.orgId ?? 1;
+}
+
+// Deterministic idempotency key for a pending action (E6).
+function idempotencyKey(tool: string, params: Record<string, unknown>, org: number): string {
+  return createHash("sha256").update(`${org}:${tool}:${JSON.stringify(params)}`).digest("hex").slice(0, 32);
 }
 
 /** Risk context known before dispatch (from the parsed intent). */
@@ -149,22 +155,25 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
     auditStatus = "blocked";
     auditSummary = `Блокировка ${intent.tool}: политика безопасности`;
   } else {
-    // RBAC LIMITED: clamp the bid change to the role cap before the preview is built.
-    if (isWrite && prePolicy.action === "require_approval" && prePolicy.bidPercentCap != null && intent.tool === "adjust_bids") {
+    // Strict execution pipeline (Phase E invariant): the raw LLM/user intent is
+    // normalized ONCE here into an execution command; the adapter and preview
+    // only ever see the normalized command — RBAC can clamp it (LIMITED).
+    const execIntent: ParsedIntent = { ...intent, params: { ...intent.params } };
+    if (isWrite && prePolicy.action === "require_approval" && prePolicy.bidPercentCap != null && execIntent.tool === "adjust_bids") {
       const cap = prePolicy.bidPercentCap;
-      intent.params.percent = Math.abs(cap);
-      intent.params.direction = cap > 0 ? "up" : "down";
+      execIntent.params.percent = Math.abs(cap);
+      execIntent.params.direction = cap > 0 ? "up" : "down";
       trace.push({ label: `RBAC: изменение ставки ограничено до ±${Math.abs(cap)}% для роли`, status: "warn" });
     }
 
-    const out = await dispatch(intent.tool, intent, settings);
+    const out = await dispatch(execIntent.tool, execIntent, settings);
     result = out.result;
     auditSummary = out.auditSummary;
 
     if (out.pending) {
       // Policy Engine — full decision including role, risk and added daily cost.
       const costDaily = out.pending.costDaily ?? 0;
-      const postRisk = { ...preDispatchRisk(intent), costDaily };
+      const postRisk = { ...preDispatchRisk(execIntent), costDaily };
       const policy = await evaluatePolicy({ tool: intent.tool, isWrite: true, settings, role, costDaily, risk: postRisk });
 
       if (policy.action === "block") {
@@ -194,6 +203,7 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
               params: out.pending.params,
               preview: result,
               costDaily,
+              idempotencyKey: idempotencyKey(intent.tool, out.pending.params, orgId()),
               status: "pending",
               source: actor,
             })
@@ -395,162 +405,235 @@ export async function resolvePending(
       });
   }
 
+  // ── Execution pipeline (Phase E): pending → executing → provider → read-back → verified | failed
   const params = (pending.params ?? {}) as Record<string, unknown>;
-  const applied = await applyEffect(pending.tool, params);
 
-  // Push the confirmed change to the real platforms (no-op detail in sandbox mode).
-  const adapterResults = await writeAdapters(applied.ops);
-  const adapterDetail = adapterResults.map((r) => `${r.platform}[${r.mode}]: ${r.detail ?? (r.ok ? "ok" : "error")}`).join("; ");
-
-  const appliedRow = await db.update(pendingActions).set({ status: "applied" }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending"))).returning();
-  if (!appliedRow.length) {
-    return insertAgentMessage("Действие не применено: оно уже было обработано или не принадлежит вашей организации.", {
-      tool: "apply_pending", toolLabel: "apply_pending", platforms: [],
-      trace: [{ label: "Tenant check: действие недоступно", status: "block" }],
-      durationMs: 60, result: { kind: "text", text: "Действие не применено." },
+  // Idempotent transition (E6): only pending|failed may enter executing.
+  const started = await db
+    .update(pendingActions)
+    .set({ status: "executing", attempts: sql`${pendingActions.attempts} + 1`, executedAt: new Date(), lastError: null })
+    .where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), inArray(pendingActions.status, ["pending", "failed"])))
+    .returning();
+  if (!started.length) {
+    return insertAgentMessage("Действие уже исполняется или уже выполнено — повторная операция не требуется (идемпотентность).", {
+      tool: "apply_pending", toolLabel: pending.tool, platforms: [],
+      trace: [{ label: "Идемпотентность: переход в executing невозможен (уже executing/verified)", status: "warn" }],
+      durationMs: 60, result: { kind: "text", text: "Действие уже исполняется или выполнено." },
     });
   }
-  await writeAudit({
-    actor,
-    tool: pending.tool,
-    params,
-    platforms: applied.platforms,
-    dryRun: false,
-    status: "applied",
-    summary: `${applied.summary} · адаптеры: ${adapterDetail || "sandbox"}`,
-  });
 
-  return insertAgentMessage(`Выполнено: ${applied.summary}. ${adapterDetail ? `Платформы: ${adapterDetail}.` : ""} Все изменения зафиксированы в журнале аудита.`, {
-    tool: "apply_pending",
-    toolLabel: pending.tool,
-    platforms: applied.platforms as Platform[],
-    trace: [
-      { label: `Подтверждение #${id} получено`, status: "ok" },
-      { label: "Локальное зеркало обновлено", detail: applied.summary, status: "ok" },
-      { label: "Адаптеры: изменения переданы площадкам", detail: adapterDetail || "sandbox-режим", status: "ok" },
-      { label: "Запись в audit-log создана", status: "ok" },
-    ],
-    durationMs: 240,
-    result: { kind: "text", text: `Готово. ${applied.summary}` },
+  const plan = await planEffect(pending.tool, params);
+
+  if (plan.ops.length > 0) {
+    // Provider first (E3/E4/E7): execute with retry, capture the provider
+    // response and READ BACK the changed resources; verified only on match.
+    const adapterResults = await executeAdapters(plan.ops);
+    const allVerified = adapterResults.every((r) => r.ok && r.verified);
+    const providerResponse: Record<string, unknown> = {};
+    const readback: Record<string, unknown> = {};
+    for (const r of adapterResults) {
+      if (r.providerResponse != null) providerResponse[r.platform] = r.providerResponse;
+      if (r.readback != null) readback[r.platform] = r.readback;
+    }
+
+    if (!allVerified) {
+      const bad = adapterResults.find((r) => !r.ok || !r.verified);
+      const errMsg = bad?.error ?? bad?.detail ?? "read-back mismatch";
+      await db.update(pendingActions).set({ status: "failed", lastError: errMsg }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org)));
+      await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "failed", summary: `Исполнение не подтверждено read-back: ${errMsg}` });
+      return insertAgentMessage(`Действие #${id} не подтверждено провайдером: ${errMsg}. Локальное зеркало не менялось; повторное подтверждение запустит новую попытку (попытка ${pending.attempts + 1}).`, {
+        tool: "apply_pending",
+        toolLabel: pending.tool,
+        platforms: plan.platforms as Platform[],
+        trace: [
+          { label: `Подтверждение #${id} получено, попытка ${pending.attempts + 1}`, status: "ok" },
+          { label: "Исполнение у провайдера завершено с ошибкой или read-back не совпал", detail: errMsg, status: "block" },
+          { label: "Локальное зеркало НЕ изменено; статус failed (повтор возможен)", status: "warn" },
+          { label: "Запись в audit-log создана (failed)", status: "ok" },
+        ],
+        durationMs: 240,
+        result: { kind: "text", text: `Не удалось применить: ${errMsg}` },
+      });
+    }
+
+    // Verified → the local mirror follows the provider's truth.
+    const summary = await plan.applyLocal();
+    await db
+      .update(pendingActions)
+      .set({ status: "verified", verifiedAt: new Date(), providerResponse, readback })
+      .where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "executing")));
+    await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "verified", summary: `${summary} · read-back подтверждён` });
+    const adapterDetail = adapterResults.map((r) => `${r.platform}[${r.mode}]: ${r.verified ? "read-back OK" : "mismatch"}`).join("; ");
+    return insertAgentMessage(`Выполнено и подтверждено read-back: ${summary}. Все изменения зафиксированы в журнале аудита.`, {
+      tool: "apply_pending",
+      toolLabel: pending.tool,
+      platforms: plan.platforms as Platform[],
+      trace: [
+        { label: `Подтверждение #${id} получено, попытка ${pending.attempts + 1}`, status: "ok" },
+        { label: "Исполнение у провайдера: ответ получен", detail: adapterDetail, status: "ok" },
+        { label: "Read-back: фактическое состояние совпало с целевым", status: "ok" },
+        { label: "Локальное зеркало обновлено", detail: summary, status: "ok" },
+        { label: "Статус verified, запись в audit-log создана", status: "ok" },
+      ],
+      durationMs: 320,
+      result: { kind: "text", text: `Готово. ${summary} Изменения подтверждены read-back.` },
+    });
+  }
+
+  // No provider ops: apply locally and mark verified.
+  const summary = await plan.applyLocal();
+  await db.update(pendingActions).set({ status: "verified", verifiedAt: new Date() }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "executing")));
+  await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "verified", summary });
+  return insertAgentMessage(`Выполнено: ${summary}. Записано в журнал аудита.`, {
+    tool: "apply_pending", toolLabel: pending.tool, platforms: plan.platforms as Platform[],
+    trace: [{ label: `Подтверждение #${id} получено`, status: "ok" }, { label: "Запись в audit-log создана", status: "ok" }],
+    durationMs: 120,
+    result: { kind: "text", text: `Готово. ${summary}` },
   });
 }
 
-interface ApplyResult {
-  summary: string;
+interface EffectPlan {
   platforms: string[];
   ops: { platform: Platform; op: WriteOp }[];
+  /** Apply the change to the local mirror; returns a human-readable summary. */
+  applyLocal: () => Promise<string>;
 }
 
-async function applyEffect(tool: string, params: Record<string, unknown>): Promise<ApplyResult> {
+async function planEffect(tool: string, params: Record<string, unknown>): Promise<EffectPlan> {
   switch (tool) {
     case "pause_low_ctr_campaigns": {
       const ids = (params.ids as number[]) ?? [];
-      if (ids.length) await db.update(campaigns).set({ status: "paused" }).where(inArray(campaigns.id, ids));
       const names = await db.select({ id: campaigns.id, name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(inArray(campaigns.id, ids));
-      const byPlatform = new Map<Platform, number[]>();
-      for (const n of names) {
-        byPlatform.set(n.platform as Platform, [...(byPlatform.get(n.platform as Platform) ?? []), 0]);
-      }
-      const ops = [...byPlatform.entries()].map(([platform]) => ({ platform, op: { kind: "campaign_status", campaignIds: ids.filter((i) => names.some((n) => n.id === i)), status: "paused" } as WriteOp }));
-      return { summary: `на паузу поставлено ${ids.length} камп. (${names.map((n) => `«${n.name}»`).join(", ")})`, platforms: [...new Set(names.map((n) => n.platform))], ops };
+      const platforms = [...new Set(names.map((n) => n.platform as Platform))];
+      const ops: { platform: Platform; op: WriteOp }[] = platforms.map((platform) => ({
+        platform,
+        op: { kind: "campaign_status", campaignIds: ids.filter((i) => names.some((n) => n.id === i)), status: "paused" },
+      }));
+      return {
+        platforms,
+        ops,
+        applyLocal: async () => {
+          if (ids.length) await db.update(campaigns).set({ status: "paused" }).where(inArray(campaigns.id, ids));
+          return `на паузу поставлено ${ids.length} камп. (${names.map((n) => `«${n.name}»`).join(", ")})`;
+        },
+      };
     }
     case "set_campaign_status": {
       const id = Number(params.campaignId);
-      const status = params.status === "active" ? "active" : "paused";
-      await db.update(campaigns).set({ status }).where(eq(campaigns.id, id));
+      const status = params.status === "active" ? ("active" as const) : ("paused" as const);
       const camp = (await db.select({ name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(eq(campaigns.id, id)))[0];
       return {
-        summary: `«${camp?.name}» ${status === "active" ? "запущена" : "поставлена на паузу"}`,
-        platforms: camp ? [camp.platform] : [],
-        ops: camp ? [{ platform: camp.platform as Platform, op: { kind: "campaign_status", campaignIds: [id], status } as WriteOp }] : [],
+        platforms: camp ? [camp.platform as Platform] : [],
+        ops: camp ? [{ platform: camp.platform as Platform, op: { kind: "campaign_status", campaignIds: [id], status } }] : [],
+        applyLocal: async () => {
+          await db.update(campaigns).set({ status }).where(eq(campaigns.id, id));
+          return `«${camp?.name}» ${status === "active" ? "запущена" : "поставлена на паузу"}`;
+        },
       };
     }
     case "adjust_bids": {
       const ids = (params.ids as number[]) ?? [];
       const factor = Number(params.factor ?? 1);
       const rows = await db.select().from(keywords).where(inArray(keywords.id, ids));
-      for (const k of rows) {
-        await db.update(keywords).set({ bid: Math.round(k.bid * factor * 10) / 10 }).where(eq(keywords.id, k.id));
-      }
       const campIds = [...new Set(rows.map((k) => k.campaignId))];
       const camps = await db.select({ platform: campaigns.platform }).from(campaigns).where(inArray(campaigns.id, campIds));
-      const byPlatform = new Map<Platform, number[]>();
-      for (const c of camps) byPlatform.set(c.platform as Platform, [...(byPlatform.get(c.platform as Platform) ?? []), 0]);
-      const ops = [...byPlatform.entries()].map(([platform]) => ({ platform, op: { kind: "bids_factor", keywordIds: ids, factor } as WriteOp }));
-      return { summary: `ставки изменены ×${factor} по ${ids.length} ключевым фразам`, platforms: [...byPlatform.keys()] as string[], ops };
+      const platforms = [...new Set(camps.map((c) => c.platform as Platform))];
+      const ops: { platform: Platform; op: WriteOp }[] = platforms.map((platform) => ({ platform, op: { kind: "bids_factor", keywordIds: ids, factor } }));
+      return {
+        platforms,
+        ops,
+        applyLocal: async () => {
+          for (const k of rows) {
+            await db.update(keywords).set({ bid: Math.round(k.bid * factor * 10) / 10 }).where(eq(keywords.id, k.id));
+          }
+          return `ставки изменены ×${factor} по ${ids.length} ключевым фразам`;
+        },
+      };
     }
     case "create_campaign": {
       const platform = (params.platform as string) ?? "google";
       const acc = (await db.select().from(accounts).where(eq(accounts.platform, platform)))[0];
-      await db.insert(campaigns).values({
-        organizationId: orgId(),
-        accountId: acc?.id ?? null,
-        platform,
-        kind: "campaign",
-        externalId: `${platform}-new-${Date.now() % 100000}`,
-        name: String(params.name ?? "Новая кампания"),
-        status: "active",
-        budgetDaily: Number(params.budget ?? 2000),
-        strategy: String(params.strategy ?? "Автостратегия"),
-      });
+      const externalId = `${platform}-new-${Date.now() % 100000}`;
       return {
-        summary: `кампания «${params.name}» создана в ${PLATFORM_LABEL[platform as Platform]} и запущена`,
-        platforms: [platform],
-        ops: [{ platform: platform as Platform, op: { kind: "create_campaign", name: String(params.name ?? "Новая кампания"), budgetDaily: Number(params.budget ?? 2000), strategy: String(params.strategy ?? "") } as WriteOp }],
+        platforms: [platform as Platform],
+        ops: [{ platform: platform as Platform, op: { kind: "create_campaign", name: String(params.name ?? "Новая кампания"), budgetDaily: Number(params.budget ?? 2000), strategy: String(params.strategy ?? "") } }],
+        applyLocal: async () => {
+          await db.insert(campaigns).values({
+            organizationId: orgId(),
+            accountId: acc?.id ?? null,
+            platform,
+            kind: "campaign",
+            externalId,
+            name: String(params.name ?? "Новая кампания"),
+            status: "active",
+            budgetDaily: Number(params.budget ?? 2000),
+            strategy: String(params.strategy ?? "Автостратегия"),
+          });
+          return `кампания «${params.name}» создана в ${PLATFORM_LABEL[platform as Platform]} и запущена`;
+        },
       };
     }
     case "promote_low_view_listings": {
       const ids = (params.ids as number[]) ?? [];
       const service = String(params.service ?? "boost7");
-      if (ids.length) await db.update(campaigns).set({ promotion: service === "boost7" ? "boost7" : "turbo" }).where(inArray(campaigns.id, ids));
       return {
-        summary: `${ids.length} объявлений Авито подключены к услуге «Поднять в поиске» на 7 дней`,
         platforms: ["avito"],
-        ops: [{ platform: "avito", op: { kind: "promote_listings", campaignIds: ids, service } as WriteOp }],
+        ops: ids.length ? [{ platform: "avito" as Platform, op: { kind: "promote_listings", campaignIds: ids, service } }] : [],
+        applyLocal: async () => {
+          if (ids.length) await db.update(campaigns).set({ promotion: service === "boost7" ? "boost7" : "turbo" }).where(inArray(campaigns.id, ids));
+          return `${ids.length} объявлений Авито подключены к услуге «Поднять в поиске» на 7 дней`;
+        },
       };
     }
     case "add_negative_keywords": {
       const campaignId = Number(params.campaignId);
       const words = (params.words as string[]) ?? [];
-      if (campaignId && words.length) {
-        await db.insert(negativeKeywords).values(words.map((w) => ({ campaignId, text: w, source: "agent" })));
-      }
       const camp = (await db.select({ name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(eq(campaigns.id, campaignId)))[0];
       return {
-        summary: `${words.length} минус-фраз добавлено в «${camp?.name ?? campaignId}»`,
-        platforms: camp ? [camp.platform] : [],
-        ops: camp ? [{ platform: camp.platform as Platform, op: { kind: "negative_keywords", campaignId, words } as WriteOp }] : [],
+        platforms: camp ? [camp.platform as Platform] : [],
+        ops: camp ? [{ platform: camp.platform as Platform, op: { kind: "negative_keywords", campaignId, words } }] : [],
+        applyLocal: async () => {
+          if (campaignId && words.length) {
+            await db.insert(negativeKeywords).values(words.map((w) => ({ campaignId, text: w, source: "agent" })));
+          }
+          return `${words.length} минус-фраз добавлено в «${camp?.name ?? campaignId}»`;
+        },
       };
     }
     case "apply_recommendation": {
       const ids = (params.ids as number[]) ?? [];
       const recs = await db.select().from(recommendations).where(inArray(recommendations.id, ids));
       const ops: { platform: Platform; op: WriteOp }[] = [];
-      let paused = 0;
-      let promoted = 0;
-      let bids = 0;
-      let shifted = 0;
+      const localJobs: (() => Promise<void>)[] = [];
+      let paused = 0, promoted = 0, bids = 0, shifted = 0;
       for (const r of recs) {
         const rp = (r.params ?? {}) as Record<string, unknown>;
         if (r.type === "pause" && r.campaignId) {
-          await db.update(campaigns).set({ status: "paused" }).where(eq(campaigns.id, r.campaignId));
-          ops.push({ platform: r.platform as Platform, op: { kind: "campaign_status", campaignIds: [r.campaignId], status: "paused" } as WriteOp });
+          const cid = r.campaignId;
+          localJobs.push(async () => { await db.update(campaigns).set({ status: "paused" }).where(eq(campaigns.id, cid)); });
+          ops.push({ platform: r.platform as Platform, op: { kind: "campaign_status", campaignIds: [cid], status: "paused" } });
           paused++;
         }
         if (r.type === "promote" && r.campaignId) {
-          await db.update(campaigns).set({ promotion: "boost7" }).where(eq(campaigns.id, r.campaignId));
-          ops.push({ platform: r.platform as Platform, op: { kind: "promote_listings", campaignIds: [r.campaignId], service: "boost7" } as WriteOp });
+          const cid = r.campaignId;
+          localJobs.push(async () => { await db.update(campaigns).set({ promotion: "boost7" }).where(eq(campaigns.id, cid)); });
+          ops.push({ platform: r.platform as Platform, op: { kind: "promote_listings", campaignIds: [cid], service: "boost7" } });
           promoted++;
         }
         if (r.type === "bids_up" && r.campaignId) {
-          const kws = await db.select({ id: keywords.id }).from(keywords).where(eq(keywords.campaignId, r.campaignId));
+          const cid = r.campaignId;
+          const kws = await db.select({ id: keywords.id }).from(keywords).where(eq(keywords.campaignId, cid));
           const kwIds = kws.map((k) => k.id).slice(0, 60);
-          for (const k of kwIds) {
-            const row = (await db.select().from(keywords).where(eq(keywords.id, k)))[0];
-            if (row) await db.update(keywords).set({ bid: Math.round(row.bid * 1.1 * 10) / 10 }).where(eq(keywords.id, k));
+          if (kwIds.length) {
+            localJobs.push(async () => {
+              const rows = await db.select().from(keywords).where(inArray(keywords.id, kwIds));
+              for (const k of rows) {
+                await db.update(keywords).set({ bid: Math.round(k.bid * 1.1 * 10) / 10 }).where(eq(keywords.id, k.id));
+              }
+            });
+            ops.push({ platform: r.platform as Platform, op: { kind: "bids_factor", keywordIds: kwIds, factor: 1.1 } });
+            bids++;
           }
-          if (kwIds.length) ops.push({ platform: r.platform as Platform, op: { kind: "bids_factor", keywordIds: kwIds, factor: 1.1 } as WriteOp });
-          bids++;
         }
         if (r.type === "budget_shift" && rp.from && rp.to) {
           const from = rp.from as Platform;
@@ -558,19 +641,25 @@ async function applyEffect(tool: string, params: Record<string, unknown>): Promi
           const percent = Number(rp.percent ?? 15);
           const fromCamps = await db.select().from(campaigns).where(and(inArray(campaigns.platform, [from]), eq(campaigns.status, "active")));
           const toCamps = await db.select().from(campaigns).where(and(inArray(campaigns.platform, [to]), eq(campaigns.status, "active")));
-          for (const c of fromCamps) {
-            const nb = Math.max(100, Math.round(c.budgetDaily * (1 - percent / 100)));
-            await db.update(campaigns).set({ budgetDaily: nb }).where(eq(campaigns.id, c.id));
+          localJobs.push(async () => {
+            for (const c of fromCamps) {
+              const nb = Math.max(100, Math.round(c.budgetDaily * (1 - percent / 100)));
+              await db.update(campaigns).set({ budgetDaily: nb }).where(eq(campaigns.id, c.id));
+            }
+            for (const c of toCamps) {
+              const nb = Math.round(c.budgetDaily * (1 + percent / 100));
+              await db.update(campaigns).set({ budgetDaily: nb }).where(eq(campaigns.id, c.id));
+            }
+          });
+          if (fromCamps.length) {
+            ops.push({ platform: from, op: { kind: "campaign_budget", campaignId: fromCamps[0].id, budgetDaily: Math.max(100, Math.round(fromCamps[0].budgetDaily * (1 - percent / 100))) } });
           }
-          for (const c of toCamps) {
-            const nb = Math.round(c.budgetDaily * (1 + percent / 100));
-            await db.update(campaigns).set({ budgetDaily: nb }).where(eq(campaigns.id, c.id));
-          }
-          if (fromCamps.length) ops.push({ platform: from, op: { kind: "campaign_budget", campaignId: fromCamps[0].id, budgetDaily: Math.max(100, Math.round(fromCamps[0].budgetDaily * (1 - percent / 100))) } as WriteOp });
           shifted++;
         }
       }
-      await db.update(recommendations).set({ status: "applied" }).where(inArray(recommendations.id, ids));
+      localJobs.push(async () => {
+        await db.update(recommendations).set({ status: "applied" }).where(inArray(recommendations.id, ids));
+      });
       const parts = [
         paused ? `пауза: ${paused}` : "",
         promoted ? `продвижение: ${promoted}` : "",
@@ -578,12 +667,15 @@ async function applyEffect(tool: string, params: Record<string, unknown>): Promi
         shifted ? `бюджет: ${shifted}` : "",
       ].filter(Boolean);
       return {
-        summary: `применено ${ids.length} рекомендаций (${parts.join(", ") || "статус обновлён"})`,
-        platforms: [...new Set(recs.map((r) => r.platform))],
+        platforms: [...new Set(recs.map((r) => r.platform as Platform))],
         ops,
+        applyLocal: async () => {
+          for (const job of localJobs) await job();
+          return `применено ${ids.length} рекомендаций (${parts.join(", ") || "статус обновлён"})`;
+        },
       };
     }
     default:
-      return { summary: `действие ${tool} выполнено`, platforms: [], ops: [] };
+      return { platforms: [], ops: [], applyLocal: async () => `действие ${tool} выполнено` };
   }
 }

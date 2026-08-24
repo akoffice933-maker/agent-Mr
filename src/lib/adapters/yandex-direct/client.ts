@@ -1,48 +1,68 @@
-// Yandex Direct adapter — production client (Директ API v5) + mirror sync.
-// Production path: requires Yandex OAuth token (see /api/oauth/yandex and
-// docs/YANDEX_SETUP.md). Field names follow Direct API v5 docs; on first
-// production connect verify them against the live API.
-// Conversions are merged from Yandex.Metrica (metrika.ts) — without Metrica
-// the CPA column stays empty (documented).
+// Yandex Direct adapter — production client for the real Direct API v5
+// (contract verified against official docs) + read-back verification (Phase E).
+//
+//   POST https://api.direct.yandex.com/json/v5/{service}   (prod)
+//   POST https://api-sandbox.direct.yandex.com/json/v5/…  (sandbox)
+//   Authorization: Bearer <token>
+//   body: { method, params }
+//
+// Execution contract (E3/E4/E7): every write returns an ExecutionResult with
+// the raw provider response AND a read-back of the changed resources; the
+// agent marks the action VERIFIED only when the read-back matches.
+//
+// Simulator mode (E8): YANDEX_SIMULATOR=1 (or createYandexClient({ simulated }))
+// routes the calls to an in-process simulator implementing the same contract —
+// full execution pipeline proof without a real account.
 
 import { and, eq, inArray } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
-import { campaigns, keywords, metricsDaily, negativeKeywords } from "@/db/schema";
-import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
-import { fetchDailyConversions, isMetrikaConfigured } from "./metrika";
-import type { DailyMetric, PlatformClient, WriteOp, WriteResult } from "../types";
+import { campaigns, keywords } from "@/db/schema";
+import { getToken, storeToken, type StoredToken } from "../oauth-store";
+import { DirectApi, type YandexTransport } from "./api";
+import { getSharedSimulator, seedSimulatorFrom } from "./simulator";
+import type { ExecutionResult, PlatformClient, WriteOp } from "../types";
 
-const API = "https://api.direct.yandex.ru";
-const OAUTH = "https://oauth.yandex.ru";
+const PROD_BASE = "https://api.direct.yandex.com/json/v5";
+const SANDBOX_BASE = "https://api-sandbox.direct.yandex.com/json/v5";
 
-function clientId(): string {
-  const v = process.env.YANDEX_OAUTH_CLIENT_ID;
-  if (!v) throw new Error("YANDEX_OAUTH_CLIENT_ID is not set");
-  return v;
-}
-function clientSecret(): string {
-  const v = process.env.YANDEX_OAUTH_CLIENT_SECRET;
-  if (!v) throw new Error("YANDEX_OAUTH_CLIENT_SECRET is not set");
-  return v;
-}
-function redirectUri(): string {
-  return `${process.env.PUBLIC_URL ?? "http://localhost:3000"}/api/oauth/yandex`;
+async function yandexToken(): Promise<string> {
+  const org = currentTenant()?.orgId ?? 1;
+  const t = await getToken(org, "yandex");
+  if (!t) throw new Error("Yandex token is missing or expired — reconnect the account");
+  return t.accessToken;
 }
 
+function isSimulatorMode(): boolean {
+  return process.env.YANDEX_SIMULATOR === "1";
+}
+
+// ── OAuth (authorization-code flow via Yandex ID) ─────────────────────────
 export function yandexAuthUrl(state: string): string {
+  const clientId = process.env.YANDEX_OAUTH_CLIENT_ID;
+  if (!clientId) throw new Error("YANDEX_OAUTH_CLIENT_ID is not set");
+  const redirectUri = `${process.env.PUBLIC_URL ?? "http://localhost:3000"}/api/oauth/yandex`;
   const p = new URLSearchParams({
     response_type: "code",
-    client_id: clientId(),
-    redirect_uri: redirectUri(),
+    client_id: clientId,
+    redirect_uri: redirectUri,
     state,
     locale: "ru",
   });
-  return `${OAUTH}/authorize?${p.toString()}`;
+  return `https://oauth.yandex.ru/authorize?${p.toString()}`;
 }
 
-async function requestToken(grantType: string, params: Record<string, string>): Promise<StoredToken> {
-  const body = new URLSearchParams({ grant_type: grantType, client_id: clientId(), client_secret: clientSecret(), ...params });
-  const res = await fetch(`${OAUTH}/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+async function yandexTokenGrant(grantType: string, params: Record<string, string>): Promise<StoredToken> {
+  const body = new URLSearchParams({
+    grant_type: grantType,
+    client_id: process.env.YANDEX_OAUTH_CLIENT_ID!,
+    client_secret: process.env.YANDEX_OAUTH_CLIENT_SECRET!,
+    ...params,
+  });
+  const res = await fetch("https://oauth.yandex.ru/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
   if (!res.ok) throw new Error(`Yandex token error ${res.status}: ${await res.text()}`);
   const d = (await res.json()) as { access_token: string; refresh_token?: string; expires_in?: number };
   return {
@@ -53,230 +73,312 @@ async function requestToken(grantType: string, params: Record<string, string>): 
 }
 
 export async function yandexExchangeCode(code: string): Promise<StoredToken> {
-  const t = await requestToken("authorization_code", { code, redirect_uri: redirectUri() });
-  await storeToken("yandex", t);
+  const redirectUri = `${process.env.PUBLIC_URL ?? "http://localhost:3000"}/api/oauth/yandex`;
+  const t = await yandexTokenGrant("authorization_code", { code, redirect_uri: redirectUri });
+  await storeToken(currentTenant()?.orgId ?? 1, "yandex", t);
   return t;
 }
 
-async function refreshYandex(_current: StoredToken | null): Promise<StoredToken> {
-  const t = await getToken("yandex", false);
-  if (!t?.refreshToken) throw new Error("No Yandex refresh token stored — reconnect the account");
-  return requestToken("refresh_token", { refresh_token: t.refreshToken });
+export interface YandexClientOptions {
+  simulated?: boolean;
+  sandbox?: boolean;
+  transport?: YandexTransport;
 }
 
-registerRefresher("yandex", refreshYandex);
+export function createYandexClient(opts: YandexClientOptions = {}): PlatformClient {
+  const simulated = opts.simulated ?? isSimulatorMode();
+  const transport = opts.transport ?? (simulated ? getSharedSimulator().transport : undefined);
+  const api = new DirectApi(
+    simulated ? async () => "simulated-token" : yandexToken,
+    opts.sandbox ? SANDBOX_BASE : PROD_BASE,
+    transport
+  );
 
-interface ApiError {
-  message?: string;
-  errors?: { type?: string; message?: string }[];
-}
-
-async function api(path: string, init?: RequestInit): Promise<unknown> {
-  const t = await getToken("yandex");
-  if (!t) throw new Error("Yandex token is missing or expired — reconnect the account");
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `OAuth ${t.accessToken}`,
-      "Direct-Version": "5",
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    let detail = text.slice(0, 300);
-    try {
-      const j = JSON.parse(text) as ApiError;
-      detail = j.errors?.map((e) => `${e.type}: ${e.message}`).join("; ") || j.message || detail;
-    } catch { /* keep raw */ }
-    throw new Error(`Direct API ${res.status}: ${detail}`);
-  }
-  return text ? JSON.parse(text) : null;
-}
-
-const STATUS_TO_API: Record<string, string> = { active: "ON", paused: "PAUSED" };
-const API_TO_STATUS: Record<string, "active" | "paused"> = { ON: "active", PAUSED: "paused" };
-
-const SYNC_DAYS = 28;
-
-async function syncCampaigns(): Promise<Map<string, number>> {
-  const camps = (await api("/v5/campaigns?campaignFields=campaignId,campaignName,status,dailyBudget,campaignType")) as {
-    result?: Record<string, unknown>[];
-  };
-  const idMap = new Map<string, number>();
-  for (const c of camps.result ?? []) {
-    const externalId = String(c.campaignId);
-    const name = String(c.campaignName ?? c.campaignId);
-    const status = API_TO_STATUS[String(c.status)] ?? "active";
-    const budget = Number(c.dailyBudget ?? 0);
-    const existing = (await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), eq(campaigns.externalId, externalId))))[0];
-    if (existing) {
-      await db.update(campaigns).set({ name, status, budgetDaily: budget }).where(eq(campaigns.id, existing.id));
-      idMap.set(externalId, existing.id);
-    } else {
-      const row = (await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "yandex", kind: "campaign", externalId, name, status, budgetDaily: budget, strategy: "Direct" }).returning())[0];
-      idMap.set(externalId, row.id);
+  // Ensure the simulator (simulated mode) is seeded from the local mirror so
+  // read-back operates against state consistent with the mirror.
+  async function ensureSimulatorSeeded(): Promise<void> {
+    if (!simulated) return;
+    const sim = getSharedSimulator();
+    if (sim.state.campaigns.length === 0) {
+      const rows = await db.select().from(campaigns).where(eq(campaigns.platform, "yandex"));
+      if (rows.length) {
+        seedSimulatorFrom(rows.map((r) => ({ id: Number(r.externalId), name: r.name, status: r.status, budgetDaily: r.budgetDaily })));
+      }
     }
   }
-  return idMap;
-}
 
-async function replaceMetric(campaignId: number, m: DailyMetric): Promise<void> {
-  const exists = (
-    await db.select({ id: metricsDaily.id }).from(metricsDaily).where(and(eq(metricsDaily.campaignId, campaignId), eq(metricsDaily.date, m.date)))
-  )[0];
-  if (exists) {
-    await db.update(metricsDaily).set({ spend: m.spend, impressions: m.impressions, clicks: m.clicks, conversions: m.conversions }).where(eq(metricsDaily.id, exists.id));
-  } else {
-    await db.insert(metricsDaily).values({ campaignId, date: m.date, spend: m.spend, impressions: m.impressions, clicks: m.clicks, conversions: m.conversions });
+  // ── sync: pull provider state into the local mirror ─────────────────────
+  async function sync(): Promise<void> {
+    await ensureSimulatorSeeded();
+    // 1. Campaigns
+    const campRes = (await api.call("campaigns", "get", {
+      SelectionCriteria: { States: ["ON", "SUSPENDED"] },
+      FieldNames: ["Id", "Name", "State", "Status", "Budget", "Type"],
+      Page: { Limit: 4000, Offset: 0 },
+    })) as { Campaigns?: Record<string, unknown>[] };
+    for (const c of campRes.Campaigns ?? []) {
+      const externalId = String(c.Id);
+      const name = String(c.Name ?? externalId);
+      const status = c.State === "SUSPENDED" ? "paused" : "active";
+      const budget = Number(c.Budget ?? 0);
+      const existing = (await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), eq(campaigns.externalId, externalId))))[0];
+      if (existing) {
+        await db.update(campaigns).set({ name, status, budgetDaily: budget }).where(eq(campaigns.id, existing.id));
+      } else {
+        await db.insert(campaigns).values({
+          organizationId: currentTenant()?.orgId ?? 1,
+          platform: "yandex",
+          kind: "campaign",
+          externalId,
+          name,
+          status,
+          budgetDaily: budget,
+          strategy: "Direct",
+        });
+      }
+    }
+
+    // 2. Keywords (with external ids for bid management)
+    const kwRes = (await api.call("keywords", "get", {
+      SelectionCriteria: {},
+      FieldNames: ["Id", "CampaignId", "Keyword", "Bid", "State"],
+      Page: { Limit: 10000, Offset: 0 },
+    })) as { Keywords?: Record<string, unknown>[] };
+    const campLocal = new Map(
+      (await db.select().from(campaigns).where(eq(campaigns.platform, "yandex"))).map((c) => [c.externalId, c.id])
+    );
+    for (const k of kwRes.Keywords ?? []) {
+      const localCampId = campLocal.get(String(k.CampaignId));
+      if (!localCampId) continue;
+      const externalId = String(k.Id);
+      const text = String(k.Keyword ?? "");
+      if (!text) continue;
+      const bid = Number(k.Bid ?? 0);
+      const existing = (await db.select().from(keywords).where(and(eq(keywords.campaignId, localCampId), eq(keywords.externalId, externalId))))[0];
+      if (existing) {
+        await db.update(keywords).set({ text, bid }).where(eq(keywords.id, existing.id));
+      } else {
+        await db.insert(keywords).values({ campaignId: localCampId, externalId, text, bid });
+      }
+    }
   }
-}
 
-export function createYandexClient(): PlatformClient {
-  return {
-    platform: "yandex",
-    isProduction: true,
+  // ── execution helpers ───────────────────────────────────────────────────
+  async function campaignStates(ids: number[]): Promise<Record<string, unknown>[]> {
+    const local = await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), inArray(campaigns.id, ids)));
+    const extIds = local.map((c) => Number(c.externalId));
+    const res = (await api.call("campaigns", "get", {
+      SelectionCriteria: { Ids: extIds },
+      FieldNames: ["Id", "State", "Name", "Budget"],
+    })) as { Campaigns?: Record<string, unknown>[] };
+    return res.Campaigns ?? [];
+  }
 
-    async sync(): Promise<void> {
-      const to = new Date().toISOString().slice(0, 10);
-      const from = new Date(Date.now() - (SYNC_DAYS - 1) * 86400000).toISOString().slice(0, 10);
-      const range = `date_from=${from}&date_to=${to}`;
+  async function keywordBids(ids: number[]): Promise<Record<string, unknown>[]> {
+    const local = await db.select().from(keywords).where(inArray(keywords.id, ids));
+    const withExt = local.filter((k) => k.externalId);
+    const res = (await api.call("keywords", "get", {
+      SelectionCriteria: { Ids: withExt.map((k) => Number(k.externalId)) },
+      FieldNames: ["Id", "Bid"],
+    })) as { Keywords?: Record<string, unknown>[] };
+    return res.Keywords ?? [];
+  }
 
-      // 1. Campaigns
-      const idMap = await syncCampaigns();
+  function fail(error: string, providerResponse?: unknown): ExecutionResult {
+    return { ok: false, verified: false, error, providerResponse };
+  }
 
-      // 2. Click stats (spend, clicks) + impressions per campaign per day
-      const clicks = (await api(`/v5/campaigns/clicks?${range}&campaignFields=campaignId,date,clicks,spend`)) as {
-        result?: Record<string, unknown>[];
-      };
-      const imps = (await api(`/v5/campaigns/impressions?${range}&campaignFields=campaignId,date,impressions`)) as {
-        result?: Record<string, unknown>[];
-      };
-      const byDay = new Map<string, { spend: number; clicks: number; impressions: number }>();
-      const bump = (key: string, patch: Partial<{ spend: number; clicks: number; impressions: number }>) => {
-        const cur = byDay.get(key) ?? { spend: 0, clicks: 0, impressions: 0 };
-        cur.spend += patch.spend ?? 0;
-        cur.clicks += patch.clicks ?? 0;
-        cur.impressions += patch.impressions ?? 0;
-        byDay.set(key, cur);
-      };
-      for (const r of clicks.result ?? []) bump(`${r.campaignId}|${String(r.date).slice(0, 10)}`, { spend: Number(r.spend ?? 0), clicks: Number(r.clicks ?? 0) });
-      for (const r of imps.result ?? []) bump(`${r.campaignId}|${String(r.date).slice(0, 10)}`, { impressions: Number(r.impressions ?? 0) });
-      for (const [key, v] of byDay) {
-        const [extId, date] = key.split("|");
-        const localId = idMap.get(extId);
-        if (localId && date) await replaceMetric(localId, { campaignId: localId, date, spend: v.spend, impressions: v.impressions, clicks: v.clicks, conversions: 0 });
-      }
-
-      // 3. Conversions from Metrica (per day, split across campaigns by clicks share)
-      if (isMetrikaConfigured()) {
-        const conv = await fetchDailyConversions(from, to);
-        const convByDate = new Map<string, number>(conv.map((c) => [c.date, c.conversions]));
-        if (convByDate.size) {
-          // For each date, distribute the counter-level goal visits across the
-          // day's Direct campaigns proportionally to their clicks.
-          const dates = [...new Set([...byDay.keys()].map((k) => k.split("|")[1]))];
-          for (const date of dates) {
-            const total = convByDate.get(date) ?? 0;
-            if (!total) continue;
-            const dayRows: { localId: number; clicks: number }[] = [];
-            let dayClicks = 0;
-            for (const [key, v] of byDay) {
-              const [extId, d] = key.split("|");
-              if (d !== date) continue;
-              const localId = idMap.get(extId);
-              if (!localId) continue;
-              dayRows.push({ localId, clicks: v.clicks });
-              dayClicks += v.clicks;
-            }
-            if (!dayClicks) continue; // no click data for this day — skip distribution
-            for (const r of dayRows) {
-              const share = Math.round(total * (r.clicks / dayClicks));
-              const existing = (
-                await db.select({ conversions: metricsDaily.conversions }).from(metricsDaily).where(and(eq(metricsDaily.campaignId, r.localId), eq(metricsDaily.date, date)))
-              )[0];
-              if (existing && share) await db.update(metricsDaily).set({ conversions: (existing.conversions ?? 0) + share }).where(and(eq(metricsDaily.campaignId, r.localId), eq(metricsDaily.date, date)));
-            }
-          }
-        }
-      }
-
-      // 4. Keywords with external ids (for bid management)
-      const kw = (await api(`/v5/keywords?keywordFields=keywordId,text,bid,clicks,impressions&limit=4000&offset=0`)) as {
-        result?: Record<string, unknown>[];
-      };
-      for (const k of kw.result ?? []) {
-        const campaignId = Number(k.campaignId);
-        const externalId = String(k.keywordId);
-        const localCampId = idMap.get(String(campaignId));
-        if (!localCampId) continue;
-        const text = String(k.text ?? "");
-        if (!text) continue;
-        const bid = Number(k.bid ?? 0);
-        const existing = (await db.select().from(keywords).where(and(eq(keywords.campaignId, localCampId), eq(keywords.externalId, externalId))))[0];
-        if (existing) {
-          await db.update(keywords).set({ text, bid }).where(eq(keywords.id, existing.id));
-        } else {
-          await db.insert(keywords).values({ campaignId: localCampId, externalId, text, bid });
-        }
-      }
-    },
-
-    async write(op: WriteOp): Promise<WriteResult> {
+  // ── execute with read-back verification (E4) ────────────────────────────
+  async function execute(op: WriteOp): Promise<ExecutionResult> {
+    await ensureSimulatorSeeded();
+    try {
       switch (op.kind) {
         case "campaign_status": {
-          const rows = await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), inArray(campaigns.id, op.campaignIds)));
-          if (!rows.length) return { ok: false, detail: "Кампании не найдены в зеркале — выполните sync" };
-          await api("/v5/campaigns/statuses", {
-            method: "POST",
-            body: JSON.stringify({ campaigns: rows.map((r) => ({ campaignId: Number(r.externalId), status: STATUS_TO_API[op.status] })) }),
-          });
-          for (const r of rows) await db.update(campaigns).set({ status: op.status }).where(eq(campaigns.id, r.id));
-          return { ok: true, detail: `Direct: ${rows.length} кампаний → ${op.status} (применено на стороне Яндекса)` };
+          const local = await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), inArray(campaigns.id, op.campaignIds)));
+          const extIds = local.map((c) => Number(c.externalId));
+          const method = op.status === "paused" ? "suspend" : "resume";
+          const resp = await api.call("campaigns", method, { SelectionCriteria: { Ids: extIds } });
+          const results = (resp as any)[method === "suspend" ? "SuspendResults" : "ResumeResults"] as { Id?: number; Errors?: { Code: number; Message: string }[] }[];
+          const errors = (results ?? []).flatMap((r) => r.Errors ?? []);
+          if (errors.length) return fail(`Direct: ${errors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`, resp);
+          const readback = await campaignStates(op.campaignIds);
+          const wanted = op.status === "paused" ? "SUSPENDED" : "ON";
+          const verified = readback.length > 0 && readback.every((c) => c.State === wanted);
+          // keep the local mirror consistent with the provider's truth
+          for (const c of readback) {
+            const ext = String(c.Id);
+            const row = local.find((x) => String(x.externalId) === ext);
+            if (row) await db.update(campaigns).set({ status: c.State === "SUSPENDED" ? "paused" : "active" }).where(eq(campaigns.id, row.id));
+          }
+          return { ok: true, verified, providerResponse: resp, readback, detail: verified ? `read-back: ${readback.length} кампаний в состоянии ${wanted}` : "read-back mismatch: состояние не совпало" };
         }
         case "campaign_budget": {
-          const r = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
-          if (!r) return { ok: false, detail: "Кампания не найдена в зеркале" };
-          await api("/v5/campaigns/budgets", {
-            method: "POST",
-            body: JSON.stringify({ campaigns: [{ campaignId: Number(r.externalId), dailyBudget: op.budgetDaily }] }),
-          });
-          await db.update(campaigns).set({ budgetDaily: op.budgetDaily }).where(eq(campaigns.id, r.id));
-          return { ok: true, detail: `Direct: бюджет «${r.name}» → ${op.budgetDaily} ₽/день` };
-        }
-        case "negative_keywords": {
-          const r = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
-          if (!r) return { ok: false, detail: "Кампания не найдена в зеркале" };
-          await api("/v5/campaigns/negativeKeywords", {
-            method: "POST",
-            body: JSON.stringify({
-              negativeKeywords: op.words.map((text) => ({ campaignId: Number(r.externalId), negativeKeyword: { text }, status: "ACTIVE" })),
-            }),
-          });
-          for (const w of op.words) await db.insert(negativeKeywords).values({ campaignId: op.campaignId, text: w, source: "agent" });
-          return { ok: true, detail: `Direct: ${op.words.length} минус-фраз → «${r.name}»` };
+          const local = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
+          const resp = await api.call("campaigns", "update", { Campaigns: [{ Id: Number(local.externalId), Budget: op.budgetDaily }] });
+          const results = (resp as any).UpdateResults as { Id?: number; Errors?: { Code: number; Message: string }[] }[];
+          const errors = (results ?? []).flatMap((r) => r.Errors ?? []);
+          if (errors.length) return fail(`Direct: ${errors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`, resp);
+          const readback = await campaignStates([op.campaignId]);
+          const verified = readback.length > 0 && Math.abs(Number(readback[0].Budget ?? 0) - op.budgetDaily) < 0.01;
+          await db.update(campaigns).set({ budgetDaily: Number(readback[0]?.Budget ?? op.budgetDaily) }).where(eq(campaigns.id, op.campaignId));
+          return { ok: true, verified, providerResponse: resp, readback, detail: verified ? "read-back: бюджет подтверждён" : "read-back mismatch: бюджет не совпал" };
         }
         case "bids_factor": {
-          const kws = await db.select().from(keywords).where(inArray(keywords.id, op.keywordIds));
-          if (!kws.length) return { ok: false, detail: "Ключи не найдены в зеркале" };
-          const withExt = kws.filter((k) => k.externalId);
-          if (!withExt.length) return { ok: false, detail: "У ключей нет externalId — выполните sync" };
-          await api("/v5/keywords/bids", {
-            method: "POST",
-            body: JSON.stringify({
-              keywords: withExt.map((k) => ({ keywordId: Number(k.externalId), bid: Math.max(1, Math.round(k.bid * op.factor * 10) / 10) })),
-            }),
-          });
-          for (const k of kws) {
-            const newBid = Math.round(k.bid * op.factor * 10) / 10;
-            await db.update(keywords).set({ bid: newBid }).where(eq(keywords.id, k.id));
+          const local = await db.select().from(keywords).where(inArray(keywords.id, op.keywordIds));
+          const withExt = local.filter((k) => k.externalId);
+          if (!withExt.length) return fail("Direct: у ключей нет externalId (выполните sync)");
+          const updates = withExt.map((k) => ({ Id: Number(k.externalId), Bid: Math.max(1, Math.round(k.bid * op.factor * 10) / 10) }));
+          const resp = await api.call("keywords", "update", { Keywords: updates });
+          const results = (resp as any).UpdateResults as { Id?: number; Errors?: { Code: number; Message: string }[] }[];
+          const errors = (results ?? []).flatMap((r) => r.Errors ?? []);
+          if (errors.length) return fail(`Direct: ${errors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`, resp);
+          const readback = await keywordBids(op.keywordIds);
+          const wanted = new Map(updates.map((u) => [u.Id, u.Bid]));
+          const verified = readback.length > 0 && readback.every((k) => Math.abs(Number(k.Bid ?? 0) - (wanted.get(Number(k.Id)) ?? 0)) < 0.01);
+          const rbMap = new Map(readback.map((k) => [k.Id, Number(k.Bid ?? 0)]));
+          for (const k of withExt) {
+            const nb = rbMap.get(Number(k.externalId));
+            if (nb != null) await db.update(keywords).set({ bid: nb }).where(eq(keywords.id, k.id));
           }
-          return { ok: true, detail: `Direct: ставки ×${op.factor} по ${withExt.length} ключам (применено на стороне Яндекса)` };
+          return { ok: true, verified, providerResponse: resp, readback, detail: verified ? `read-back: ставки подтверждены по ${readback.length} ключам` : "read-back mismatch: ставки не совпали" };
+        }
+        case "create_campaign": {
+          if (op.url && !/^https?:\/\//i.test(op.url)) return fail("Direct: URL объявления должен начинаться с http:// или https://");
+          const moscowNow = new Date(Date.now() + 3 * 60 * 60 * 1000);
+          const startDate = moscowNow.toISOString().slice(0, 10);
+          if ((op.title || op.text || op.url) && (!op.title || !op.text || !op.url)) {
+            return fail("Direct: для создания объявления нужны title, text и url");
+          }
+          const weeklyBudgetMicros = Math.round(op.budgetDaily * 7 * 1_000_000);
+          const campaignResp = (await api.call("campaigns", "add", {
+            Campaigns: [{
+              Name: op.name,
+              StartDate: startDate,
+              TimeZone: "Europe/Moscow",
+              TextCampaign: {
+                BiddingStrategy: {
+                  Search: {
+                    BiddingStrategyType: "WB_MAXIMUM_CLICKS",
+                    PlacementTypes: { SearchResults: "YES", DynamicPlaces: "YES" },
+                    WbMaximumClicks: { WeeklySpendLimit: weeklyBudgetMicros },
+                  },
+                  Network: { BiddingStrategyType: "SERVING_OFF" },
+                },
+              },
+            }],
+          })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
+          const campaignResult = campaignResp.AddResults?.[0];
+          const campaignErrors = campaignResult?.Errors ?? [];
+          if (campaignErrors.length || !campaignResult?.Id) {
+            return fail(`Direct: создание кампании: ${campaignErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ") || "ID кампании не возвращён"}`, campaignResp);
+          }
+          const externalId = Number(campaignResult.Id);
+
+          // Build a normal Text & Image ad tree when creative data was supplied.
+          let adGroupId: number | undefined;
+          let adIds: number[] = [];
+          let keywordIds: number[] = [];
+          if (op.adGroupName || op.title || op.text || op.keywords?.length) {
+            const groupResp = (await api.call("adgroups", "add", {
+              AdGroups: [{
+                Name: op.adGroupName ?? `${op.name} · группа 1`,
+                CampaignId: externalId,
+                RegionIds: op.regionIds?.length ? op.regionIds : [0],
+                ...(op.negativeKeywords?.length ? { NegativeKeywords: { Items: op.negativeKeywords } } : {}),
+              }],
+            })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
+            const groupResult = groupResp.AddResults?.[0];
+            const groupErrors = groupResult?.Errors ?? [];
+            if (groupErrors.length || !groupResult?.Id) return fail(`Direct: создание группы: ${groupErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ") || "ID группы не возвращён"}`, { campaign: campaignResp, adGroup: groupResp });
+            adGroupId = Number(groupResult.Id);
+
+            if (op.title || op.text || op.url) {
+              if (!op.title || !op.text || !op.url) return fail("Direct: для создания объявления нужны title, text и url", { campaign: campaignResp, adGroup: groupResp });
+              const adResp = (await api.call("ads", "add", {
+                Ads: [{ AdGroupId: adGroupId, TextAd: { Title: op.title, Text: op.text, Mobile: "NO", Href: op.url } }],
+              })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
+              const adResult = adResp.AddResults?.[0];
+              const adErrors = adResult?.Errors ?? [];
+              if (adErrors.length || !adResult?.Id) return fail(`Direct: создание объявления: ${adErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ") || "ID объявления не возвращён"}`, { campaign: campaignResp, adGroup: groupResp, ad: adResp });
+              adIds = [Number(adResult.Id)];
+            }
+
+            if (op.keywords?.length) {
+              const kwResp = (await api.call("keywords", "add", {
+                Keywords: op.keywords.slice(0, 1000).map((Keyword) => ({ Keyword, AdGroupId: adGroupId })),
+              })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
+              const kwErrors = (kwResp.AddResults ?? []).flatMap((r) => r.Errors ?? []);
+              if (kwErrors.length) return fail(`Direct: создание ключевых фраз: ${kwErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`, { campaign: campaignResp, adGroup: groupResp, keywords: kwResp });
+              keywordIds = (kwResp.AddResults ?? []).map((r) => Number(r.Id)).filter(Number.isFinite);
+            }
+          }
+
+          const readback = await api.call("campaigns", "get", { SelectionCriteria: { Ids: [externalId] }, FieldNames: ["Id", "Name", "State", "Status", "Type"] });
+          const campaignsBack = (readback as { Campaigns?: Record<string, unknown>[] }).Campaigns ?? [];
+          const campaignVerified = campaignsBack.length === 1 && Number(campaignsBack[0].Id) === externalId && String(campaignsBack[0].Name) === op.name;
+          if (!campaignVerified) return fail("Direct: read-back кампании не совпал с созданной", { campaign: campaignResp, readback });
+
+          let adReadback: unknown;
+          let keywordReadback: unknown;
+          if (adGroupId) {
+            const groupsBack = await api.call("adgroups", "get", { SelectionCriteria: { Ids: [adGroupId] }, FieldNames: ["Id", "CampaignId", "Name"] });
+            const groups = (groupsBack as { AdGroups?: Record<string, unknown>[] }).AdGroups ?? [];
+            if (groups.length !== 1 || Number(groups[0].CampaignId) !== externalId) return fail("Direct: read-back группы не совпал", { campaign: campaignResp, readback, adGroup: groupsBack });
+            if (adIds.length) {
+              adReadback = await api.call("ads", "get", { SelectionCriteria: { Ids: adIds }, FieldNames: ["Id", "CampaignId", "AdGroupId", "Type", "Status", "State"], TextAdFieldNames: ["Title", "Text", "Href"] });
+              const ads = (adReadback as { Ads?: Record<string, unknown>[] }).Ads ?? [];
+              if (ads.length !== adIds.length || !ads.every((a) => Number(a.CampaignId) === externalId && Number(a.AdGroupId) === adGroupId)) return fail("Direct: read-back объявления не совпал", { campaign: campaignResp, adGroup: groupsBack, ads: adReadback });
+            }
+            if (keywordIds.length) {
+              keywordReadback = await api.call("keywords", "get", { SelectionCriteria: { Ids: keywordIds }, FieldNames: ["Id", "AdGroupId", "CampaignId", "Keyword", "State"] });
+              const kws = (keywordReadback as { Keywords?: Record<string, unknown>[] }).Keywords ?? [];
+              if (kws.length !== keywordIds.length || !kws.every((k) => Number(k.AdGroupId) === adGroupId)) return fail("Direct: read-back ключевых фраз не совпал", { campaign: campaignResp, adGroup: groupsBack, keywords: keywordReadback });
+            }
+          }
+
+          // Persist the real provider campaign ID only after provider verification.
+          const existing = (await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), eq(campaigns.externalId, String(externalId)))))[0];
+          if (!existing) {
+            await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "yandex", kind: "campaign", externalId: String(externalId), name: op.name, status: "active", budgetDaily: op.budgetDaily, strategy: op.strategy || "Максимум кликов" });
+          } else {
+            await db.update(campaigns).set({ name: op.name, status: "active", budgetDaily: op.budgetDaily, strategy: op.strategy || existing.strategy }).where(eq(campaigns.id, existing.id));
+          }
+
+          return {
+            ok: true, verified: true,
+            providerResponse: { campaign: campaignResp, adGroupId, adIds, keywordIds },
+            readback: { campaign: campaignsBack, adGroupId, ads: adReadback, keywords: keywordReadback },
+            detail: `Direct: кампания создана и подтверждена${adGroupId ? ` · группа ${adGroupId}` : ""}${adIds.length ? ` · объявление ${adIds[0]}` : ""}${keywordIds.length ? ` · ключевых фраз ${keywordIds.length}` : ""}`,
+          };
+        }
+        case "negative_keywords": {
+          const local = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
+          const resp = await api.call("negativekeywords", "add", {
+            NegativeKeywords: op.words.map((w) => ({ CampaignId: Number(local.externalId), TextKeyword: { Keyword: w } })),
+          });
+          const results = (resp as any).AddResults as { Errors?: { Code: number; Message: string }[] }[];
+          const errors = (results ?? []).flatMap((r) => r.Errors ?? []);
+          if (errors.length) return fail(`Direct: ${errors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`, resp);
+          const kwRes = (await api.call("negativekeywords", "get", {
+            SelectionCriteria: { CampaignIds: [Number(local.externalId)] },
+            FieldNames: ["CampaignId", "Keyword"],
+          })) as { NegativeKeywords?: Record<string, unknown>[] };
+          const present = new Set((kwRes.NegativeKeywords ?? []).map((n) => String(n.Keyword)));
+          const verified = op.words.every((w) => present.has(w));
+          return { ok: true, verified, providerResponse: resp, readback: kwRes.NegativeKeywords, detail: verified ? `read-back: ${op.words.length} минус-фраз на месте` : "read-back mismatch: минус-фразы не найдены" };
         }
         default:
-          return { ok: false, detail: `Direct: операция ${op.kind} не поддерживается этой версией адаптера` };
+          return fail(`Direct: операция ${op.kind} не поддерживается этой версией адаптера`);
       }
-    },
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  }
+
+  return {
+    platform: "yandex",
+    isProduction: true, // real API (or its simulator) — execution is verified either way
+    sync,
+    execute,
   };
 }

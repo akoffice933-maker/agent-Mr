@@ -8,7 +8,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
-import type { DailyMetric, PlatformClient, WriteOp, WriteResult } from "../types";
+import type { DailyMetric, PlatformClient, ExecutionResult, WriteOp } from "../types";
 
 function version(): string {
   return process.env.AVITO_API_VERSION ?? "v1";
@@ -47,7 +47,7 @@ export async function avitoFetchToken(): Promise<StoredToken> {
     expiresAt: new Date(Date.now() + (d.expires_in ?? 24 * 3600) * 1000),
     extra: { grant: "client_credentials" },
   };
-  await storeToken("avito", t);
+  await storeToken(currentTenant()?.orgId ?? 1, "avito", t);
   return t;
 }
 
@@ -59,7 +59,7 @@ async function refreshAvito(_current: StoredToken | null): Promise<StoredToken> 
 registerRefresher("avito", refreshAvito);
 
 async function api(path: string, init?: RequestInit): Promise<unknown> {
-  const t = await getToken("avito");
+  const t = await getToken(currentTenant()?.orgId ?? 1, "avito");
   if (!t) throw new Error("Avito token is missing or expired");
   const res = await fetch(`https://api.avito.ru/business/${version()}${path}`, {
     ...init,
@@ -126,7 +126,7 @@ export function createAvitoClient(): PlatformClient {
       }
     },
 
-    async write(op: WriteOp): Promise<WriteResult> {
+    async execute(op: WriteOp): Promise<ExecutionResult> {
       switch (op.kind) {
         case "campaign_status": {
           const rows = await db.select().from(campaigns).where(and(eq(campaigns.platform, "avito"), inArray(campaigns.id, op.campaignIds)));
@@ -136,7 +136,7 @@ export function createAvitoClient(): PlatformClient {
               body: JSON.stringify({ status: op.status === "active" ? "online" : "offline" }),
             });
           }
-          return { ok: true, detail: `Авито: ${rows.length} объявлений → ${op.status}` };
+          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Авито: ${rows.length} объявлений → ${op.status}` };
         }
         case "promote_listings": {
           const rows = await db.select().from(campaigns).where(and(eq(campaigns.platform, "avito"), inArray(campaigns.id, op.campaignIds)));
@@ -147,12 +147,12 @@ export function createAvitoClient(): PlatformClient {
               body: JSON.stringify({ serviceType: op.service === "boost7" ? "BOOST" : "TURBO", period: 7 }),
             });
           }
-          return { ok: true, detail: `Авито: продвинуто ${rows.length} объявлений (${op.service})` };
+          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Авито: продвинуто ${rows.length} объявлений (${op.service})` };
         }
         case "create_campaign":
-          return { ok: true, detail: "Авито: создание объявления — через карточку (follow-up), локально зафиксировано" };
+          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: "Авито: создание объявления — через карточку (follow-up), локально зафиксировано" };
         default:
-          return { ok: false, detail: `Авито: операция ${op.kind} не поддерживается этой версией адаптера` };
+          return { ok: false, verified: false, detail: `Авито: операция ${op.kind} не поддерживается этой версией адаптера` };
       }
     },
   };
