@@ -164,7 +164,8 @@ export function parseIntent(raw: string): ParsedIntent {
 
   // 7. Create campaign
   if (/(создай|создать|запусти новую|новая кампани|сделай кампани)/.test(norm)) {
-    const mName = norm.match(/под названием [«"']([^»"']+)[»"']/) ?? norm.match(/названи[ея]? [«"']([^»"']+)[»"']/);
+    // Name is captured from the ORIGINAL text (case-preserving), not norm.
+    const mName = raw.match(/под названием [«"']([^»"']+)[»"']/i) ?? raw.match(/названи[ея]? [«"']([^»"']+)[»"']/i);
     const mBudget = norm.match(/бюджет[а-я]*\s*(\d[\d\s]{2,9})/) ?? norm.match(/(\d[\d\s]{2,9})\s*\/?\s*день/);
     const budget = mBudget ? Math.min(500000, parseInt(mBudget[1].replace(/\s/g, ""), 10)) : 2000;
     return {

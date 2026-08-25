@@ -314,6 +314,11 @@ Definition of Done — закрыто:
 - **Реальный supervised E2E** (Фаза F): real Yandex account → OAuth →
   Campaigns.add → AdGroups.add → Ads.add → Keywords.add → read-back → VERIFIED.
   Архитектурно готово; требуется реальная учётка и ключи OAuth.
+  Runbook: `docs/YANDEX_E2E.md`. **Репетиция полного пути выполнена
+  25.08.2026** против симулятора: chat → preview → ручной approve →
+  builder (campaign→adgroup→ad→4 keywords, correlation tag) → read-back →
+  VERIFIED, mirror с реальным Id, audit pending→verified (в т.ч. полный
+  spec из ревью: 1 группа / 1 объявление / 4 ключа / 2 минус-слова).
 
 ## Фаза F — интеграции и доказательная база
 

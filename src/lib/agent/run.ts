@@ -603,8 +603,9 @@ async function planEffect(tool: string, params: Record<string, unknown>, pending
           // verified read-back carries the REAL provider id; other platforms
           // (sandbox) keep a placeholder external id.
           const yandexResult = results.find((r) => r.platform === "yandex");
-          const rb = yandexResult?.readback as { campaign?: { id?: number }[]; createdResources?: unknown[] } | undefined;
-          const realId = Array.isArray(rb?.campaign) && rb.campaign.length ? Number(rb.campaign[0].id) : NaN;
+          const rb = yandexResult?.readback as { campaign?: { Id?: number; id?: number }[]; createdResources?: unknown[] } | undefined;
+          // Direct API returns capital-Id fields; accept both shapes.
+          const realId = Array.isArray(rb?.campaign) && rb.campaign.length ? Number(rb.campaign[0].Id ?? rb.campaign[0].id) : NaN;
           const externalId = Number.isFinite(realId) ? String(realId) : `${platform}-new-${Date.now() % 100000}`;
           await db.insert(campaigns).values({
             organizationId: orgId(),

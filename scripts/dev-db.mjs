@@ -104,6 +104,11 @@ if (await portUp()) {
       fs.rmSync(DATA_DIR + "/" + f, { force: true });
     } catch {}
   }
+  // Sandbox snapshot restore widens the data dir to 0755; Postgres 18 hard-
+  // requires u=rwx (0700) or u=rwx,g=rx (0750). Self-heal to 0700.
+  try {
+    fs.chmodSync(DATA_DIR, 0o700);
+  } catch {}
   await postgres.start();
 }
 // Readiness = a real SQL connection (isHealthy() only knows instances this
