@@ -15,7 +15,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createHash } from "crypto";
 import { getApiKey, isAuthRequired } from "@/lib/auth-policy";
-import { rawDbPool } from "@/lib/tenant/pool";
+import { identityPool } from "@/lib/tenant/pool";
 import { resolveSessionContext } from "@/lib/tenant/resolve";
 import { TENANT_HEADERS } from "@/lib/tenant/request";
 
@@ -49,7 +49,7 @@ async function hasAnyUser(): Promise<boolean> {
   if (uc && Date.now() - uc.at < 30_000) return uc.has;
   let has = false;
   try {
-    const r = await rawDbPool.query("SELECT 1 FROM users LIMIT 1");
+    const r = await identityPool.query("SELECT 1 FROM users LIMIT 1");
     has = (r as { rows: unknown[] }).rows.length > 0;
   } catch {
     has = false;
@@ -84,13 +84,13 @@ async function resolveKeyTenant(key: string): Promise<TenantHeaders | null> {
   const hash = createHash("sha256").update(key).digest("hex");
   // Only active (non-revoked, non-expired) keys resolve; raw key is never
   // matched or stored — only its sha256 hash.
-  const r = await rawDbPool.query(
+  const r = await identityPool.query(
     "SELECT org_id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) LIMIT 1",
     [hash]
   );
   const row = (r as { rows: { org_id: number }[] }).rows[0];
   if (!row) return null;
-  await rawDbPool.query("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1", [hash]);
+  await identityPool.query("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1", [hash]);
   return { "x-tenant-org-id": String(row.org_id), "x-tenant-user-id": null, "x-tenant-role": "admin" };
 }
 

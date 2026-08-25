@@ -38,6 +38,7 @@ export interface SimAd {
 export interface SimKeyword {
   Id: number;
   CampaignId: number;
+  AdGroupId?: number;
   Keyword: string;
   Bid: number;
   State: "ON" | "SUSPENDED";
@@ -59,7 +60,17 @@ export interface Simulator {
   injectTransientFailures(n: number): void;
   /** make the next write call fail with a permanent validation error */
   injectPermanentFailure(message?: string): void;
+  /**
+   * Fail writes to a SPECIFIC service (partial-failure/saga tests).
+   * `times` defaults to ∞ — a SUSTAINED outage: DirectApi retries transient
+   * 500s up to 3×, so a one-shot failure would be healed by the retry loop
+   * and no partial state would exist. Clear with clearWriteFailures().
+   */
+  failWrites(service: string, times?: number, message?: string): void;
+  clearWriteFailures(): void;
   calls: { service: string; method: string }[];
+  /** full request log (service, method, params) for assertions */
+  lastRequests: { service: string; method: string; params: Record<string, unknown> }[];
 }
 
 export function createSimulator(initial?: Partial<SimState>): Simulator {
@@ -72,13 +83,28 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
   };
   let transientLeft = 0;
   let permanent: string | null = null;
+  let nextWriteFailure: { service: string; left: number; message: string } | null = null;
   const calls: { service: string; method: string }[] = [];
+  const lastRequests: { service: string; method: string; params: Record<string, unknown> }[] = [];
 
   const err = (code: number, message: string): YandexApiError => ({ Code: code, Message: message });
 
   const transport: YandexTransport = async (service, method, params) => {
     calls.push({ service, method });
+    lastRequests.push({ service, method, params });
     const isWrite = !["get"].includes(method);
+    if (isWrite && nextWriteFailure && nextWriteFailure.service === service) {
+      const f = nextWriteFailure;
+      if (f.left === Infinity) {
+        // sustained outage — keep failing
+      } else {
+        f.left -= 1;
+        if (f.left <= 0) nextWriteFailure = null;
+      }
+      const e = new Error(f.message) as Error & { status?: number };
+      e.status = 500;
+      throw e;
+    }
     if (isWrite && transientLeft > 0) {
       transientLeft--;
       const resp: YandexResponse = { result: { SuspendResults: [] }, errors: [err(13, "Simulated transient server error")] };
@@ -131,12 +157,28 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
         const adds = (p.Campaigns as Record<string, any>[]) ?? [];
         const results = adds.map((c) => {
           const id = Math.max(0, ...state.campaigns.map((x) => x.Id)) + 1;
-          const weekly = Number(c.TextCampaign?.BiddingStrategy?.Search?.WbMaximumClicks?.WeeklySpendLimit ?? 0) / 1_000_000;
+          const bs = c.TextCampaign?.BiddingStrategy?.Search ?? {};
+          const weekly =
+            Number(bs.WbMaximumClicks?.WeeklySpendLimit ?? bs.WbMaximumConversions?.WeeklySpendLimit ?? 0) / 1_000_000;
           const budget = weekly > 0 ? weekly / 7 : 0;
           state.campaigns.push({ Id: id, Name: String(c.Name), State: "ON", Budget: budget, Type: "TEXT_CAMPAIGN" });
           return { Id: id };
         });
         return { result: { AddResults: results } };
+      }
+      if (method === "delete") {
+        const ids = (p.SelectionCriteria?.Ids as number[]) ?? [];
+        const results = ids.map((id) => {
+          const i = state.campaigns.findIndex((c) => c.Id === id);
+          if (i === -1) return { Errors: [err(270, `Campaign ${id} not found`)] };
+          state.campaigns.splice(i, 1);
+          // provider cascades: group → ads → keywords
+          state.adGroups = state.adGroups.filter((g) => g.CampaignId !== id);
+          state.ads = state.ads.filter((a) => a.CampaignId !== id);
+          state.keywords = state.keywords.filter((k) => k.CampaignId !== id);
+          return { Id: id };
+        });
+        return { result: { DeleteResults: results } };
       }
       return { errors: [err(17, `Unknown campaigns method ${method}`)] };
     }
@@ -147,6 +189,7 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
         const sc = p.SelectionCriteria ?? {};
         if (sc.Ids) list = list.filter((k) => (sc.Ids as number[]).includes(k.Id));
         if (sc.CampaignIds) list = list.filter((k) => (sc.CampaignIds as number[]).includes(k.CampaignId));
+        if (sc.AdGroupIds) list = list.filter((k) => k.AdGroupId != null && (sc.AdGroupIds as number[]).includes(k.AdGroupId));
         const fields = (p.FieldNames as string[]) ?? ["Id"];
         return { result: { Keywords: list.map((k) => Object.fromEntries(fields.map((f) => [f, (k as unknown as Record<string, unknown>)[f]]))) } };
       }
@@ -168,10 +211,20 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
           const group = state.adGroups.find((g) => g.Id === groupId);
           if (!group) return { Errors: [err(270, `AdGroup ${groupId} not found`)] };
           const id = Math.max(0, ...state.keywords.map((x) => x.Id)) + 1;
-          state.keywords.push({ Id: id, CampaignId: group.CampaignId, Keyword: String(k.Keyword), Bid: Number(k.Bid ?? 0), State: "ON" });
-          return { Id: id };
+          state.keywords.push({ Id: id, CampaignId: group.CampaignId, AdGroupId: groupId, Keyword: String(k.Keyword), Bid: Number(k.Bid ?? 0), State: "ON" });
+          return { Id: id, Keyword: String(k.Keyword) };
         });
         return { result: { AddResults: results } };
+      }
+      if (method === "delete") {
+        const ids = (p.SelectionCriteria?.Ids as number[]) ?? [];
+        const results = ids.map((id) => {
+          const i = state.keywords.findIndex((k) => k.Id === id);
+          if (i === -1) return { Errors: [err(270, `Keyword ${id} not found`)] };
+          state.keywords.splice(i, 1);
+          return { Id: id };
+        });
+        return { result: { DeleteResults: results } };
       }
       return { errors: [err(17, `Unknown keywords method ${method}`)] };
     }
@@ -193,8 +246,21 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
         const sc = p.SelectionCriteria ?? {};
         if (sc.Ids) list = list.filter((g) => (sc.Ids as number[]).includes(g.Id));
         if (sc.CampaignIds) list = list.filter((g) => (sc.CampaignIds as number[]).includes(g.CampaignId));
+        if (sc.Names) list = list.filter((g) => (sc.Names as string[]).includes(g.Name));
         const fields = (p.FieldNames as string[]) ?? ["Id", "CampaignId", "Name"];
         return { result: { AdGroups: list.map((g) => Object.fromEntries(fields.map((f) => [f, (g as any)[f]]))) } };
+      }
+      if (method === "delete") {
+        const ids = (p.SelectionCriteria?.Ids as number[]) ?? [];
+        const results = ids.map((id) => {
+          const i = state.adGroups.findIndex((g) => g.Id === id);
+          if (i === -1) return { Errors: [err(270, `AdGroup ${id} not found`)] };
+          state.adGroups.splice(i, 1);
+          state.ads = state.ads.filter((a) => a.AdGroupId !== id);
+          state.keywords = state.keywords.filter((k) => k.AdGroupId !== id);
+          return { Id: id };
+        });
+        return { result: { DeleteResults: results } };
       }
       return { errors: [err(17, `Unknown adgroups method ${method}`)] };
     }
@@ -220,6 +286,16 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
         if (sc.AdGroupIds) list = list.filter((a) => (sc.AdGroupIds as number[]).includes(a.AdGroupId));
         if (sc.CampaignIds) list = list.filter((a) => (sc.CampaignIds as number[]).includes(a.CampaignId));
         return { result: { Ads: list } };
+      }
+      if (method === "delete") {
+        const ids = (p.SelectionCriteria?.Ids as number[]) ?? [];
+        const results = ids.map((id) => {
+          const i = state.ads.findIndex((a) => a.Id === id);
+          if (i === -1) return { Errors: [err(270, `Ad ${id} not found`)] };
+          state.ads.splice(i, 1);
+          return { Id: id };
+        });
+        return { result: { DeleteResults: results } };
       }
       return { errors: [err(17, `Unknown ads method ${method}`)] };
     }
@@ -285,11 +361,18 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
     transport,
     state,
     calls,
+    lastRequests,
     injectTransientFailures(n) {
       transientLeft = n;
     },
     injectPermanentFailure(message = "Simulated permanent validation error") {
       permanent = message;
+    },
+    failWrites(service, times = Infinity, message = "Simulated provider failure (500)") {
+      nextWriteFailure = { service, left: times, message };
+    },
+    clearWriteFailures() {
+      nextWriteFailure = null;
     },
   };
 }

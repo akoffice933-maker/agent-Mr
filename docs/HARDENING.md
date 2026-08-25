@@ -247,6 +247,74 @@ Definition of Done — закрыто:
 > так как suspend раньше никогда не применялся по-настоящему). Все 65 тестов
 > зелёные на живой БД, дважды подряд с нуля.
 
+## Фаза E.1 — Production Yandex Execution (внешнее ревью, 25.08.2026)
+
+Цель: закрыть P0-риски перед реальным supervised E2E. Оценка ревью:
+8.3/10, «NO-GO для автономного production execution, GO для supervised beta».
+
+### P0 (исполнено)
+
+- **Идемпотентное создание кампании (P0-1).** У Директа нет client-token
+  идемпотентности, поэтому в название кампании вшивается кореляционный тег
+  `agentmr:{orgId}:{pendingActionId}` (`yandex-direct/naming.ts`). Перед
+  созданием билдер ИЩЕТ кампанию по тегу и **усыновляет** (adopt) уже
+  созданную, а не дублирует. Ретраи того же pending-действия (после таймаута)
+  продолжают с места, не создавая дублей. Проверено тестом: build → retry →
+  ровно 1 кампания/группа/объявление/ключ, `adopted=true`.
+- **Saga / partial failure (P0-2).** `campaign-builder.ts` при сбое на любом
+  шаге возвращает полное состояние: `createdResources[]` + `failedAt`. Это
+  попадает в `pending_actions.readback`, а сообщение агенту перечисляет, что
+  реально создано на провайдере, и предлагает **продолжить** (идемпотентный
+  retry) или **удалить** (`delete_campaign_tree`). Компенсация удалением
+  (ads → keywords → adgroups → campaign) верифицируется read-back до пустоты.
+- **Целостность account ↔ organization (P0-3).** Составной FK
+  `campaigns(organization_id, account_id) → accounts(organization_id, id)`
+  (миграция 0004 + unique на `accounts`). Кампания больше не может ссылаться
+  на аккаунт из чужой организации даже при обходе RLS.
+- **invalid role → DENY, убран fallback → admin (P0-4).** `parseRole()` и
+  `tenantContextFromHeaders()` при неизвестном/отсутствующем значении дают
+  `viewer` (минимальные права), а не `admin`. Повреждённая строка или
+  отрезанный internal-header больше не повышают привилегии.
+- **Убрано дублирование users.role (P0-5).** Эффективная роль ВСЕГДА из
+  `org_members.role` (per-tenant); `users.role` помечен DEPRECATED в схеме.
+  Интеграционный тест: users.role=admin + org_members.role=viewer →
+  resolveSessionContext отдаёт viewer.
+- **Strategy mapping без hardcode (P0-6).** `yandex-direct/strategy.ts`:
+  детерминированное маппинг approved strategy → Direct BiddingStrategy
+  (maximum_clicks/conversions, manual_cpc, target_cpa). PREVIEW (tools.ts) и
+  EXECUTION (builder) используют один и тот же модуль — то, что approves
+  пользователь, и создаётся на провайдере. Мусорное значение деградирует в
+  максимум кликов, никогда в более агрессивную стратегию.
+
+### P1 (исполнено)
+
+- **Money-модуль (P1-11).** `src/lib/money.ts`: вся ₽↔micros конвертация в
+  одном месте, целочисленная, без float-арифметики в деньгах.
+- **Вынесен Campaign Builder (P1-7).** Монолитный `case "create_campaign"`
+  разобран: `campaign-builder.ts` (оркестрация), `strategy.ts`, `naming.ts`,
+  `money.ts`. Адаптер остался тонким оркестратором.
+- **Убран generic rawDbPool (P1-9).** Экспортируется `identityPool` — пул
+  только для identity-плоскости (users/sessions/api_keys, RLS по дизайну
+  отсутствует). Для tenant-данных — только `db` (tenant-bound).
+- **OAuth replay/tampering security tests (P1-10).** 6 сценариев против
+  реального `/api/oauth/yandex` на живой БД: valid / expired / wrong user /
+  wrong org / replay / tampered — только valid даёт токен.
+
+### CI (исправлено)
+
+`drizzle-kit migrate` (CLI 0.31.x) молча глотал ошибки миграций за TUI-спиннером
+в CI (тихий exit 1). Миграции теперь применяются через `scripts/migrate.mjs`
+(drizzle-orm migrator, честные ошибки + exit code). drizzle-kit зафиксирован
+на 0.31.10 (0.18.x не имеет команды migrate — причина красных CI 1e9b381/1423b4a).
+
+### Не исполнено сознательно (следующий шаг)
+
+- **Redis/DB-backed rate limiter** (P1-8): сейчас in-memory per-instance.
+  Требуется инфаструктура (Upstash/Redis) — не в песочнице.
+- **Реальный supervised E2E** (Фаза F): real Yandex account → OAuth →
+  Campaigns.add → AdGroups.add → Ads.add → Keywords.add → read-back → VERIFIED.
+  Архитектурно готово; требуется реальная учётка и ключи OAuth.
+
 ## Фаза F — интеграции и доказательная база
 
 - Реальный Google Ads (gRPC/GAQL, бюджетные операции на стороне платформы)

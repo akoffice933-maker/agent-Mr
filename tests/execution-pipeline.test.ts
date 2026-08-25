@@ -160,6 +160,53 @@ describe("Phase E: execution pipeline (write → read-back → verified)", () =>
     });
   });
 
+  it("E.1: delete_campaign_tree — saga compensation removes the provider tree and verifies it is gone", async () => {
+    await withTenant(ctx, async () => {
+      const sim = createSimulator({ campaigns: freshSimCampaigns() });
+      const client = clientWith(sim);
+      // Build a partial-ish tree through the real execute path (idempotent
+      // builder with correlation tag).
+      const created = await client.execute({
+        kind: "create_campaign",
+        name: "Компенсация",
+        budgetDaily: 500,
+        strategy: "maximum_clicks",
+        correlationId: 777,
+        adGroupName: "Группа",
+        title: "Т",
+        text: "Текст",
+        url: "https://example.com",
+        keywords: ["ключ1", "ключ2"],
+      });
+      expect(created.ok).toBe(true);
+      expect(created.verified).toBe(true);
+      const rb = created.readback as { campaign: { Id: number }[] };
+      const extId = Number(rb.campaign[0].Id);
+      expect(sim.state.campaigns).toHaveLength(3); // 2 fresh + 1 created
+      expect(sim.state.adGroups).toHaveLength(1);
+      expect(sim.state.ads).toHaveLength(1);
+      expect(sim.state.keywords).toHaveLength(2);
+
+      // Mirror row pointing at the provider campaign, then compensate.
+      const row = (
+        await db
+          .insert(campaigns)
+          .values({ organizationId: 1, platform: "yandex", kind: "campaign", externalId: String(extId), name: "Компенсация", status: "active", budgetDaily: 500, strategy: "test" })
+          .returning()
+      )[0];
+      const res = await client.execute({ kind: "delete_campaign_tree", campaignId: row.id });
+      expect(res.ok).toBe(true);
+      expect(res.verified).toBe(true);
+      // Provider side: the whole tree is gone.
+      expect(sim.state.campaigns.find((c) => c.Id === extId)).toBeUndefined();
+      expect(sim.state.adGroups.filter((g) => g.CampaignId === extId)).toHaveLength(0);
+      expect(sim.state.ads.filter((a) => a.CampaignId === extId)).toHaveLength(0);
+      expect(sim.state.keywords.filter((k) => k.CampaignId === extId)).toHaveLength(0);
+      // Other campaigns untouched.
+      expect(sim.state.campaigns).toHaveLength(2);
+    });
+  });
+
   it("E6: idempotency — re-applying an already-verified suspend is a no-op", async () => {
     await withTenant(ctx, async () => {
       const sim = createSimulator({ campaigns: freshSimCampaigns() });

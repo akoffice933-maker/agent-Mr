@@ -26,7 +26,10 @@ export function tenantContextFromHeaders(h: Headers): TenantContext {
   return {
     orgId: Number.isFinite(orgId) && orgId > 0 ? orgId : 1,
     userId: userIdRaw ? Number(userIdRaw) : null,
-    role: h.get(TENANT_HEADERS.role) ?? "admin",
+    // FAIL-CLOSED: a missing/unknown role header must never read as admin.
+    // (The proxy always sets this after auth; resolveRequestContext's
+    // auth-off dev default is the only intentional "admin" path.)
+    role: parseRole(h.get(TENANT_HEADERS.role)),
   };
 }
 

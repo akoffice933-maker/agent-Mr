@@ -46,6 +46,17 @@ export type WriteOp =
       keywords?: string[];
       negativeKeywords?: string[];
       regionIds?: number[];
+      /** stable id of the pending action — builds the provider-side correlation
+       *  tag (agentmr:{org}:{actionId}) so a retried action ADOPTS the already
+       *  created campaign instead of duplicating it (E.1 idempotency). */
+      correlationId?: number;
+      maxCpcRubles?: number;
+      maxCpaRubles?: number;
+    }
+  | {
+      /** Saga compensation: delete a (partially) created Yandex campaign tree. */
+      kind: "delete_campaign_tree";
+      campaignId: number; // local mirror id
     };
 
 /** Result of an executed write with provider verification (Phase E, E4). */

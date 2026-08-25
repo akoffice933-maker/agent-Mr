@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorize, RISK, type Action, type Role } from "@/lib/agent/rbac";
+import { authorize, parseRole, RISK, type Action, type Role } from "@/lib/agent/rbac";
 
 const EXEC: Action[] = ["execute_campaign_status", "execute_bids", "execute_budget", "execute_promotion", "execute_negative"];
 
@@ -75,5 +75,31 @@ describe("RBAC risk dimension (Role + Action + Resource + Risk = Decision)", () 
   it("admin/owner bids are not capped by the buyer cap", () => {
     expect(authorize({ role: "admin", action: "execute_bids", context: { bidChangePercent: 50 } }).decision).toBe("ALLOW");
     expect(authorize({ role: "owner", action: "execute_bids", context: { bidChangePercent: 50 } }).decision).toBe("ALLOW");
+  });
+});
+
+describe("parseRole fail-closed (E.1 P0-4)", () => {
+  it("known roles parse to themselves", () => {
+    expect(parseRole("owner")).toBe("owner");
+    expect(parseRole("admin")).toBe("admin");
+    expect(parseRole("media_buyer")).toBe("media_buyer");
+    expect(parseRole("analyst")).toBe("analyst");
+    expect(parseRole("viewer")).toBe("viewer");
+  });
+
+  it("unknown/missing role NEVER escalates to admin — it degrades to the least-privileged viewer", () => {
+    expect(parseRole("garbage")).toBe("viewer");
+    expect(parseRole("ADMIN")).toBe("viewer"); // case-sensitive: not a known role
+    expect(parseRole("")).toBe("viewer");
+    expect(parseRole(null)).toBe("viewer");
+    expect(parseRole(undefined)).toBe("viewer");
+  });
+
+  it("a viewer parsed from garbage holds no execute permission", () => {
+    const role = parseRole("corrupted-row-value");
+    for (const action of EXEC) {
+      expect(authorize({ role, action }).decision).toBe("DENY");
+    }
+    expect(authorize({ role, action: "read" }).decision).toBe("ALLOW");
   });
 });

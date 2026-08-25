@@ -126,8 +126,14 @@ const MATRIX: Record<Role, Record<Action, Decision>> = {
 
 export const ROLES: Role[] = ["owner", "admin", "media_buyer", "analyst", "viewer"];
 
+/**
+ * Parse a role from storage/headers.
+ * FAIL-CLOSED (review P0): an unknown/missing role must NEVER escalate —
+ * it maps to the least-privileged role (viewer), not admin. A corrupted row
+ * or a stripped internal header yields no execute permissions.
+ */
 export function parseRole(r: string | null | undefined): Role {
-  return (ROLES.includes(r as Role) ? r : "admin") as Role;
+  return (ROLES.includes(r as Role) ? r : "viewer") as Role;
 }
 
 export const ROLE_LABEL: Record<Role, string> = {

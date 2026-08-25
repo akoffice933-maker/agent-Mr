@@ -9,6 +9,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 
 // ── Accounts ────────────────────────────────────────────────────────────────
@@ -27,7 +28,10 @@ export const campaigns = pgTable(
   {
     id: serial("id").primaryKey(),
     organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-    accountId: integer("account_id").references(() => accounts.id),
+    // Tenant integrity (E.1): (organization_id, account_id) is a COMPOSITE FK
+    // to accounts(organization_id, id) — a campaign can never reference an
+    // account from another org, even though RLS protects the rows themselves.
+    accountId: integer("account_id"),
     platform: text("platform").notNull(),
     kind: text("kind").notNull().default("campaign"), // campaign | listing
     externalId: text("external_id"),
@@ -38,7 +42,16 @@ export const campaigns = pgTable(
     price: doublePrecision("price"), // listings only
     promotion: text("promotion").notNull().default("none"), // listings: none | boost7 | turbo
   },
-  (t) => [index("campaigns_platform_idx").on(t.platform)]
+  (t) => [
+    index("campaigns_platform_idx").on(t.platform),
+    // ON DELETE SET NULL is set by migration 0004 (drizzle v0.45 foreignKey()
+    // helper does not expose onDelete for composite FKs).
+    foreignKey({
+      name: "campaigns_org_account_fk",
+      columns: [t.organizationId, t.accountId],
+      foreignColumns: [accounts.organizationId, accounts.id],
+    }),
+  ]
 );
 
 // ── Daily metrics (unified: impressions→показы/просмотры, clicks→клики/контакты)
@@ -155,7 +168,10 @@ export const users = pgTable("users", {
   email: text("email").notNull(),
   passwordHash: text("password_hash").notNull(), // scrypt$N$r$p$salt$hash
   name: text("name"),
-  // Phase D roles (default admin for now): owner | admin | media_buyer | analyst | viewer
+  // DEPRECATED (E.1): kept for backward compatibility only. The effective role
+  // is ALWAYS org_members.role (per-tenant membership) — see
+  // resolveSessionContext. Never read this column for authorization; a future
+  // migration will drop it.
   role: text("role").notNull().default("admin"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

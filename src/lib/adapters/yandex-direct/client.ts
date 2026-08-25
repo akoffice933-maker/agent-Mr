@@ -20,6 +20,9 @@ import { campaigns, keywords } from "@/db/schema";
 import { getToken, storeToken, type StoredToken } from "../oauth-store";
 import { DirectApi, type YandexTransport } from "./api";
 import { getSharedSimulator, seedSimulatorFrom } from "./simulator";
+import { buildCampaignTree } from "./campaign-builder";
+import { resolveStrategy } from "./strategy";
+import { correlationName } from "./naming";
 import type { ExecutionResult, PlatformClient, WriteOp } from "../types";
 
 const PROD_BASE = "https://api.direct.yandex.com/json/v5";
@@ -243,112 +246,67 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
           return { ok: true, verified, providerResponse: resp, readback, detail: verified ? `read-back: ставки подтверждены по ${readback.length} ключам` : "read-back mismatch: ставки не совпали" };
         }
         case "create_campaign": {
+          // Phase E.1: the monolithic build is extracted into campaign-builder
+          // (idempotent adoption by correlation name, partial-failure state,
+          // deterministic strategy mapping). The LOCAL MIRROR is written by the
+          // agent's applyLocal step (run.ts) from the verified read-back — not
+          // here — so exactly one row per provider campaign is created.
           if (op.url && !/^https?:\/\//i.test(op.url)) return fail("Direct: URL объявления должен начинаться с http:// или https://");
-          const moscowNow = new Date(Date.now() + 3 * 60 * 60 * 1000);
-          const startDate = moscowNow.toISOString().slice(0, 10);
           if ((op.title || op.text || op.url) && (!op.title || !op.text || !op.url)) {
             return fail("Direct: для создания объявления нужны title, text и url");
           }
-          const weeklyBudgetMicros = Math.round(op.budgetDaily * 7 * 1_000_000);
-          const campaignResp = (await api.call("campaigns", "add", {
-            Campaigns: [{
-              Name: op.name,
-              StartDate: startDate,
-              TimeZone: "Europe/Moscow",
-              TextCampaign: {
-                BiddingStrategy: {
-                  Search: {
-                    BiddingStrategyType: "WB_MAXIMUM_CLICKS",
-                    PlacementTypes: { SearchResults: "YES", DynamicPlaces: "YES" },
-                    WbMaximumClicks: { WeeklySpendLimit: weeklyBudgetMicros },
-                  },
-                  Network: { BiddingStrategyType: "SERVING_OFF" },
-                },
-              },
-            }],
-          })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
-          const campaignResult = campaignResp.AddResults?.[0];
-          const campaignErrors = campaignResult?.Errors ?? [];
-          if (campaignErrors.length || !campaignResult?.Id) {
-            return fail(`Direct: создание кампании: ${campaignErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ") || "ID кампании не возвращён"}`, campaignResp);
-          }
-          const externalId = Number(campaignResult.Id);
-
-          // Build a normal Text & Image ad tree when creative data was supplied.
-          let adGroupId: number | undefined;
-          let adIds: number[] = [];
-          let keywordIds: number[] = [];
-          if (op.adGroupName || op.title || op.text || op.keywords?.length) {
-            const groupResp = (await api.call("adgroups", "add", {
-              AdGroups: [{
-                Name: op.adGroupName ?? `${op.name} · группа 1`,
-                CampaignId: externalId,
-                RegionIds: op.regionIds?.length ? op.regionIds : [0],
-                ...(op.negativeKeywords?.length ? { NegativeKeywords: { Items: op.negativeKeywords } } : {}),
-              }],
-            })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
-            const groupResult = groupResp.AddResults?.[0];
-            const groupErrors = groupResult?.Errors ?? [];
-            if (groupErrors.length || !groupResult?.Id) return fail(`Direct: создание группы: ${groupErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ") || "ID группы не возвращён"}`, { campaign: campaignResp, adGroup: groupResp });
-            adGroupId = Number(groupResult.Id);
-
-            if (op.title || op.text || op.url) {
-              if (!op.title || !op.text || !op.url) return fail("Direct: для создания объявления нужны title, text и url", { campaign: campaignResp, adGroup: groupResp });
-              const adResp = (await api.call("ads", "add", {
-                Ads: [{ AdGroupId: adGroupId, TextAd: { Title: op.title, Text: op.text, Mobile: "NO", Href: op.url } }],
-              })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
-              const adResult = adResp.AddResults?.[0];
-              const adErrors = adResult?.Errors ?? [];
-              if (adErrors.length || !adResult?.Id) return fail(`Direct: создание объявления: ${adErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ") || "ID объявления не возвращён"}`, { campaign: campaignResp, adGroup: groupResp, ad: adResp });
-              adIds = [Number(adResult.Id)];
-            }
-
-            if (op.keywords?.length) {
-              const kwResp = (await api.call("keywords", "add", {
-                Keywords: op.keywords.slice(0, 1000).map((Keyword) => ({ Keyword, AdGroupId: adGroupId })),
-              })) as { AddResults?: { Id?: number; Errors?: { Code: number; Message: string }[] }[] };
-              const kwErrors = (kwResp.AddResults ?? []).flatMap((r) => r.Errors ?? []);
-              if (kwErrors.length) return fail(`Direct: создание ключевых фраз: ${kwErrors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`, { campaign: campaignResp, adGroup: groupResp, keywords: kwResp });
-              keywordIds = (kwResp.AddResults ?? []).map((r) => Number(r.Id)).filter(Number.isFinite);
-            }
-          }
-
-          const readback = await api.call("campaigns", "get", { SelectionCriteria: { Ids: [externalId] }, FieldNames: ["Id", "Name", "State", "Status", "Type"] });
-          const campaignsBack = (readback as { Campaigns?: Record<string, unknown>[] }).Campaigns ?? [];
-          const campaignVerified = campaignsBack.length === 1 && Number(campaignsBack[0].Id) === externalId && String(campaignsBack[0].Name) === op.name;
-          if (!campaignVerified) return fail("Direct: read-back кампании не совпал с созданной", { campaign: campaignResp, readback });
-
-          let adReadback: unknown;
-          let keywordReadback: unknown;
-          if (adGroupId) {
-            const groupsBack = await api.call("adgroups", "get", { SelectionCriteria: { Ids: [adGroupId] }, FieldNames: ["Id", "CampaignId", "Name"] });
-            const groups = (groupsBack as { AdGroups?: Record<string, unknown>[] }).AdGroups ?? [];
-            if (groups.length !== 1 || Number(groups[0].CampaignId) !== externalId) return fail("Direct: read-back группы не совпал", { campaign: campaignResp, readback, adGroup: groupsBack });
-            if (adIds.length) {
-              adReadback = await api.call("ads", "get", { SelectionCriteria: { Ids: adIds }, FieldNames: ["Id", "CampaignId", "AdGroupId", "Type", "Status", "State"], TextAdFieldNames: ["Title", "Text", "Href"] });
-              const ads = (adReadback as { Ads?: Record<string, unknown>[] }).Ads ?? [];
-              if (ads.length !== adIds.length || !ads.every((a) => Number(a.CampaignId) === externalId && Number(a.AdGroupId) === adGroupId)) return fail("Direct: read-back объявления не совпал", { campaign: campaignResp, adGroup: groupsBack, ads: adReadback });
-            }
-            if (keywordIds.length) {
-              keywordReadback = await api.call("keywords", "get", { SelectionCriteria: { Ids: keywordIds }, FieldNames: ["Id", "AdGroupId", "CampaignId", "Keyword", "State"] });
-              const kws = (keywordReadback as { Keywords?: Record<string, unknown>[] }).Keywords ?? [];
-              if (kws.length !== keywordIds.length || !kws.every((k) => Number(k.AdGroupId) === adGroupId)) return fail("Direct: read-back ключевых фраз не совпал", { campaign: campaignResp, adGroup: groupsBack, keywords: keywordReadback });
-            }
-          }
-
-          // Persist the real provider campaign ID only after provider verification.
-          const existing = (await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), eq(campaigns.externalId, String(externalId)))))[0];
-          if (!existing) {
-            await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "yandex", kind: "campaign", externalId: String(externalId), name: op.name, status: "active", budgetDaily: op.budgetDaily, strategy: op.strategy || "Максимум кликов" });
-          } else {
-            await db.update(campaigns).set({ name: op.name, status: "active", budgetDaily: op.budgetDaily, strategy: op.strategy || existing.strategy }).where(eq(campaigns.id, existing.id));
-          }
-
+          const orgId = currentTenant()?.orgId ?? 1;
+          const corrName = op.correlationId ? correlationName(orgId, op.correlationId, op.name) : op.name;
+          const built = await buildCampaignTree(api, {
+            correlationName: corrName,
+            budgetDaily: op.budgetDaily,
+            strategy: resolveStrategy(op.strategy),
+            maxCpcRubles: op.maxCpcRubles,
+            maxCpaRubles: op.maxCpaRubles,
+            adGroupName: op.adGroupName,
+            title: op.title,
+            text: op.text,
+            url: op.url,
+            keywords: op.keywords,
+            negativeKeywords: op.negativeKeywords,
+            regionIds: op.regionIds,
+          });
           return {
-            ok: true, verified: true,
-            providerResponse: { campaign: campaignResp, adGroupId, adIds, keywordIds },
-            readback: { campaign: campaignsBack, adGroupId, ads: adReadback, keywords: keywordReadback },
-            detail: `Direct: кампания создана и подтверждена${adGroupId ? ` · группа ${adGroupId}` : ""}${adIds.length ? ` · объявление ${adIds[0]}` : ""}${keywordIds.length ? ` · ключевых фраз ${keywordIds.length}` : ""}`,
+            ok: built.ok,
+            verified: built.verified,
+            error: built.error,
+            detail: built.detail,
+            providerResponse: built.providerResponse,
+            // readback carries the structured saga state (createdResources,
+            // failedAt, adopted) — stored in pending_actions.readback.
+            readback: built.readback ?? built.state,
+          };
+        }
+        case "delete_campaign_tree": {
+          // Saga compensation: delete what a (partially) failed create left at
+          // the provider. Order: ads → keywords → adgroups → campaign; verified
+          // only when the campaign read-back is empty.
+          const local = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
+          if (!local?.externalId) return fail("Direct: у кампании нет externalId — нечего удалять на провайдере");
+          const extId = Number(local.externalId);
+          const ads = (await api.call("ads", "get", { SelectionCriteria: { CampaignIds: [extId] }, FieldNames: ["Id"] })) as { Ads?: Record<string, unknown>[] };
+          const adIds = (ads.Ads ?? []).map((a) => Number(a.Id)).filter(Number.isFinite);
+          if (adIds.length) await api.call("ads", "delete", { SelectionCriteria: { Ids: adIds } });
+          const kws = (await api.call("keywords", "get", { SelectionCriteria: { CampaignIds: [extId] }, FieldNames: ["Id"] })) as { Keywords?: Record<string, unknown>[] };
+          const kwIds = (kws.Keywords ?? []).map((k) => Number(k.Id)).filter(Number.isFinite);
+          if (kwIds.length) await api.call("keywords", "delete", { SelectionCriteria: { Ids: kwIds } });
+          const groups = (await api.call("adgroups", "get", { SelectionCriteria: { CampaignIds: [extId] }, FieldNames: ["Id"] })) as { AdGroups?: Record<string, unknown>[] };
+          const groupIds = (groups.AdGroups ?? []).map((g) => Number(g.Id)).filter(Number.isFinite);
+          if (groupIds.length) await api.call("adgroups", "delete", { SelectionCriteria: { Ids: groupIds } });
+          const delResp = await api.call("campaigns", "delete", { SelectionCriteria: { Ids: [extId] } });
+          const back = (await api.call("campaigns", "get", { SelectionCriteria: { Ids: [extId] }, FieldNames: ["Id"] })) as { Campaigns?: Record<string, unknown>[] };
+          const gone = (back.Campaigns ?? []).length === 0;
+          return {
+            ok: true,
+            verified: gone,
+            providerResponse: delResp,
+            readback: { campaign: back.Campaigns ?? [], removed: { ads: adIds.length, keywords: kwIds.length, adGroups: groupIds.length, campaign: gone } },
+            detail: gone ? `Direct: кампания ${extId} и её дерево (объявлений: ${adIds.length}, ключей: ${kwIds.length}, групп: ${groupIds.length}) удалены — read-back пуст` : "Direct: read-back: кампания всё ещё существует",
           };
         }
         case "negative_keywords": {

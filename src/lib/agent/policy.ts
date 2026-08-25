@@ -39,6 +39,7 @@ export function toolToAction(tool: string): Action {
     case "adjust_bids":
       return "execute_bids";
     case "create_campaign":
+    case "delete_created_campaign":
     case "apply_recommendation":
       return "execute_budget"; // conservative: recommendations can touch bids/budgets
     case "promote_low_view_listings":

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { readSessionCookie } from "@/lib/auth/cookies";
 import { getUserById, validateSession } from "@/lib/auth/sessions";
 import { isAuthRequired } from "@/lib/auth-policy";
-import { rawDbPool } from "@/lib/tenant/pool";
+import { identityPool } from "@/lib/tenant/pool";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,7 @@ export async function GET(req: Request) {
   const user = await getUserById(session.userId);
   if (!user) return NextResponse.json({ authMode: "on", error: "unauthorized" }, { status: 401 });
   // primary org membership
-  const r = await rawDbPool.query(
+  const r = await identityPool.query(
     "SELECT org_id, role FROM org_members WHERE user_id = $1 ORDER BY created_at LIMIT 1",
     [user.id]
   );

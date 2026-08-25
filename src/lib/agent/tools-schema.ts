@@ -104,6 +104,11 @@ export const LLM_TOOLS: LLMTool[] = [
         name: { type: "string" },
         budget: { type: "number", description: "Дневной бюджет, ₽" },
         platform: { type: "string", enum: ["google", "yandex", "avito"], description: "Не указана — google" },
+        strategy: {
+          type: "string",
+          enum: ["maximum_clicks", "maximum_conversions", "manual_cpc", "target_cpa"],
+          description: "Стратегия ставок (Яндекс): maximum_clicks — максимум кликов (по умолчанию); maximum_conversions — максимум конверсий; manual_cpc — ручные ставки CPC; target_cpa — целевая цена конверсии",
+        },
         url: { type: "string", description: "URL сайта для объявления (для Яндекс Директа обязателен при создании текстового объявления)" },
         ad_group_name: { type: "string", description: "Название группы объявлений" },
         title: { type: "string", description: "Заголовок текстового объявления" },
@@ -112,6 +117,18 @@ export const LLM_TOOLS: LLMTool[] = [
         negative_keywords: { type: "array", items: { type: "string" }, description: "Минус-фразы" },
         region_ids: { type: "array", items: { type: "number" }, description: "ID регионов Яндекс; по умолчанию [0]" },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "delete_created_campaign",
+    description: "Удаление созданной агентом кампании Яндекс Директа и её дерева (группы, объявления, ключи) — compensation при частичном создании (write-операция, потребует подтверждения).",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Название кампании (как в сообщении о создании/сбое; с тегом agentmr:org:action)" },
+      },
+      required: ["name"],
       additionalProperties: false,
     },
   },

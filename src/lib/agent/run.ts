@@ -8,6 +8,7 @@ import {
   campaigns,
   keywords,
   messages,
+  metricsDaily,
   negativeKeywords,
   pendingActions,
   recommendations,
@@ -26,6 +27,7 @@ import { PLATFORM_LABEL } from "./types";
 import { buildSessionContext } from "./session-context";
 import { persistBudgetShift, suggestBudgetShift } from "./cross-platform-advisor";
 import { executeAdapters, syncAdapters } from "@/lib/adapters";
+import type { AdapterOutcome } from "@/lib/adapters";
 import type { WriteOp } from "@/lib/adapters/types";
 
 const TOOL_DESC: Record<string, string> = {
@@ -37,6 +39,7 @@ const TOOL_DESC: Record<string, string> = {
   run_account_audit: "автоматический аудит кабинетов",
   adjust_bids: "корректировка ставок",
   create_campaign: "создание кампании",
+  delete_created_campaign: "удаление созданной кампании (compensation)",
   list_campaigns: "список кампаний",
   get_keyword_performance: "статистика по ключевым фразам",
   add_negative_keywords: "добавление минус-фраз",
@@ -289,6 +292,8 @@ async function dispatch(tool: string, intent: ParsedIntent, _settings: SafetySet
       return tools.adjustBids(intent);
     case "create_campaign":
       return tools.createCampaign(intent);
+    case "delete_created_campaign":
+      return tools.deleteCreatedCampaign(intent);
     case "promote_low_view_listings":
       return tools.promoteLowViewListings(intent);
     case "add_negative_keywords":
@@ -422,7 +427,7 @@ export async function resolvePending(
     });
   }
 
-  const plan = await planEffect(pending.tool, params);
+  const plan = await planEffect(pending.tool, params, pending.id);
 
   if (plan.ops.length > 0) {
     // Provider first (E3/E4/E7): execute with retry, capture the provider
@@ -439,9 +444,20 @@ export async function resolvePending(
     if (!allVerified) {
       const bad = adapterResults.find((r) => !r.ok || !r.verified);
       const errMsg = bad?.error ?? bad?.detail ?? "read-back mismatch";
-      await db.update(pendingActions).set({ status: "failed", lastError: errMsg }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org)));
-      await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "failed", summary: `Исполнение не подтверждено read-back: ${errMsg}` });
-      return insertAgentMessage(`Действие #${id} не подтверждено провайдером: ${errMsg}. Локальное зеркало не менялось; повторное подтверждение запустит новую попытку (попытка ${pending.attempts + 1}).`, {
+      // E.1 saga state: a partial provider build carries createdResources +
+      // failedAt in the read-back — tell the user exactly what exists and
+      // that a retry RESUMES (idempotent by correlation name), plus the
+      // cleanup option.
+      const partial = (bad?.readback as { createdResources?: { kind: string; id: number; name?: string; adopted?: boolean }[]; failedAt?: string } | undefined) ?? null;
+      const partialNote =
+        partial?.createdResources?.length
+          ? ` На провайдере уже создано: ${partial.createdResources
+              .map((r) => `${r.kind === "campaign" ? "кампания" : r.kind === "adgroup" ? "группа" : r.kind === "ad" ? "объявление" : "ключ"} #${r.id}${r.name ? ` «${r.name}»` : ""}`)
+              .join(", ")}. Сбой на шаге: ${partial.failedAt ?? "?"}. Повторное подтверждение ПРОДОЛЖИТ создание с места сбоя без дублей (идемпотентность по кореляционному тегу) — или попросите удалить созданные объекты (удаление созданной кампании).`
+          : "";
+      await db.update(pendingActions).set({ status: "failed", lastError: errMsg, readback: bad?.readback ?? null, providerResponse: bad?.providerResponse ?? null }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org)));
+      await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "failed", summary: `Исполнение не подтверждено read-back: ${errMsg}${partial?.createdResources?.length ? ` · частичное создание: ${partial.createdResources.length} ресурс(а) на провайдере, сбой на шаге ${partial.failedAt ?? "?"}` : ""}` });
+      return insertAgentMessage(`Действие #${id} не подтверждено провайдером: ${errMsg}.${partialNote} Локальное зеркало не менялось; повторное подтверждение запустит новую попытку (попытка ${pending.attempts + 1}).`, {
         tool: "apply_pending",
         toolLabel: pending.tool,
         platforms: plan.platforms as Platform[],
@@ -457,7 +473,7 @@ export async function resolvePending(
     }
 
     // Verified → the local mirror follows the provider's truth.
-    const summary = await plan.applyLocal();
+    const summary = await plan.applyLocal({ results: adapterResults });
     await db
       .update(pendingActions)
       .set({ status: "verified", verifiedAt: new Date(), providerResponse, readback })
@@ -481,7 +497,7 @@ export async function resolvePending(
   }
 
   // No provider ops: apply locally and mark verified.
-  const summary = await plan.applyLocal();
+  const summary = await plan.applyLocal({ results: [] });
   await db.update(pendingActions).set({ status: "verified", verifiedAt: new Date() }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "executing")));
   await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "verified", summary });
   return insertAgentMessage(`Выполнено: ${summary}. Записано в журнал аудита.`, {
@@ -495,11 +511,15 @@ export async function resolvePending(
 interface EffectPlan {
   platforms: string[];
   ops: { platform: Platform; op: WriteOp }[];
-  /** Apply the change to the local mirror; returns a human-readable summary. */
-  applyLocal: () => Promise<string>;
+  /**
+   * Apply the change to the local mirror; returns a human-readable summary.
+   * Receives the provider execution results (E.1: create_campaign uses the
+   * verified read-back — the REAL provider id — instead of a placeholder).
+   */
+  applyLocal: (ctx: { results: AdapterOutcome[] }) => Promise<string>;
 }
 
-async function planEffect(tool: string, params: Record<string, unknown>): Promise<EffectPlan> {
+async function planEffect(tool: string, params: Record<string, unknown>, pendingId: number): Promise<EffectPlan> {
   switch (tool) {
     case "pause_low_ctr_campaigns": {
       const ids = (params.ids as number[]) ?? [];
@@ -553,11 +573,39 @@ async function planEffect(tool: string, params: Record<string, unknown>): Promis
     case "create_campaign": {
       const platform = (params.platform as string) ?? "google";
       const acc = (await db.select().from(accounts).where(eq(accounts.platform, platform)))[0];
-      const externalId = `${platform}-new-${Date.now() % 100000}`;
+      const strategy = String(params.strategy ?? "");
       return {
         platforms: [platform as Platform],
-        ops: [{ platform: platform as Platform, op: { kind: "create_campaign", name: String(params.name ?? "Новая кампания"), budgetDaily: Number(params.budget ?? 2000), strategy: String(params.strategy ?? "") } }],
-        applyLocal: async () => {
+        ops: [
+          {
+            platform: platform as Platform,
+            op: {
+              kind: "create_campaign",
+              name: String(params.name ?? "Новая кампания"),
+              budgetDaily: Number(params.budget ?? 2000),
+              strategy,
+              // E.1 idempotency: the provider-side correlation tag is stable
+              // for this pending action, so a retried create ADOPTS the
+              // already-created campaign instead of duplicating it.
+              correlationId: pendingId,
+              url: typeof params.url === "string" ? params.url : undefined,
+              adGroupName: typeof params.adGroupName === "string" ? params.adGroupName : undefined,
+              title: typeof params.title === "string" ? params.title : undefined,
+              text: typeof params.text === "string" ? params.text : undefined,
+              keywords: Array.isArray(params.keywords) ? (params.keywords as string[]) : undefined,
+              negativeKeywords: Array.isArray(params.negativeKeywords) ? (params.negativeKeywords as string[]) : undefined,
+              regionIds: Array.isArray(params.regionIds) ? (params.regionIds as number[]) : undefined,
+            },
+          },
+        ],
+        applyLocal: async ({ results }) => {
+          // E.1: exactly ONE mirror row per provider campaign. Yandex's
+          // verified read-back carries the REAL provider id; other platforms
+          // (sandbox) keep a placeholder external id.
+          const yandexResult = results.find((r) => r.platform === "yandex");
+          const rb = yandexResult?.readback as { campaign?: { id?: number }[]; createdResources?: unknown[] } | undefined;
+          const realId = Array.isArray(rb?.campaign) && rb.campaign.length ? Number(rb.campaign[0].id) : NaN;
+          const externalId = Number.isFinite(realId) ? String(realId) : `${platform}-new-${Date.now() % 100000}`;
           await db.insert(campaigns).values({
             organizationId: orgId(),
             accountId: acc?.id ?? null,
@@ -567,9 +615,28 @@ async function planEffect(tool: string, params: Record<string, unknown>): Promis
             name: String(params.name ?? "Новая кампания"),
             status: "active",
             budgetDaily: Number(params.budget ?? 2000),
-            strategy: String(params.strategy ?? "Автостратегия"),
+            strategy: strategy || "Автостратегия",
           });
-          return `кампания «${params.name}» создана в ${PLATFORM_LABEL[platform as Platform]} и запущена`;
+          return `кампания «${params.name}» создана в ${PLATFORM_LABEL[platform as Platform]} и запущена (id ${externalId})`;
+        },
+      };
+    }
+    case "delete_created_campaign": {
+      // Saga compensation (E.1): remove what a (partially) failed create left
+      // at the provider, then drop the local mirror rows.
+      const platform = (params.platform as string) ?? "yandex";
+      const campaignId = Number(params.campaignId);
+      const camp = (await db.select({ id: campaigns.id, name: campaigns.name, platform: campaigns.platform }).from(campaigns).where(eq(campaigns.id, campaignId)))[0];
+      if (!camp || camp.platform !== platform) return { platforms: [], ops: [], applyLocal: async () => "кампания не найдена в локальном зеркале" };
+      return {
+        platforms: [platform as Platform],
+        ops: [{ platform: platform as Platform, op: { kind: "delete_campaign_tree", campaignId } }],
+        applyLocal: async () => {
+          await db.delete(keywords).where(eq(keywords.campaignId, campaignId));
+          await db.delete(negativeKeywords).where(eq(negativeKeywords.campaignId, campaignId));
+          await db.delete(metricsDaily).where(eq(metricsDaily.campaignId, campaignId));
+          await db.delete(campaigns).where(eq(campaigns.id, campaignId));
+          return `кампания «${camp.name}» удалена с провайдера и из локального зеркала`;
         },
       };
     }

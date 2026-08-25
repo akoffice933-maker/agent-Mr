@@ -46,7 +46,7 @@ describe.skipIf(!dbUrl)("tenant security (requires DATABASE_TEST_URL)", () => {
   });
 
   it("set_config regression: tenant context is transaction-scoped and cannot leak", async () => {
-    const { withTenant, rawDbPool, db } = await import("../../src/lib/tenant/pool");
+    const { withTenant, identityPool: rawDbPool, db } = await import("../../src/lib/tenant/pool");
     const { sql } = await import("drizzle-orm");
 
     const sessionSetting = async (c: PgLike) => (await c.query("SELECT current_setting('app.org_id', true) AS v")).rows[0].v as string | null;
@@ -121,6 +121,39 @@ describe.skipIf(!dbUrl)("tenant security (requires DATABASE_TEST_URL)", () => {
       c.release();
     } finally {
       await p.end();
+    }
+  });
+});
+
+// Identity / role source of truth (E.1 P0-5): the effective role ALWAYS comes
+// from org_members (per-tenant membership), never from the deprecated
+// users.role column. A corrupted/legacy users.role must not change anything.
+describe("role source of truth (org_members, not users.role)", () => {
+  it("users.role=admin + org_members.role=viewer → effective role is viewer", async () => {
+    const { resolveSessionContext } = await import("../../src/lib/tenant/resolve");
+    const { identityPool } = await import("../../src/lib/tenant/pool");
+    const stamp = Date.now();
+    const org = (await identityPool.query(`INSERT INTO organizations (name) VALUES ($1) RETURNING id`, [`E1 role ${stamp}`])) as any;
+    const orgId = org.rows[0].id as number;
+    const user = (await identityPool.query(
+      `INSERT INTO users (email, password_hash, role) VALUES ($1, 'h', 'admin') RETURNING id`,
+      [`e1-role-${stamp}@test.local`]
+    )) as any;
+    const userId = user.rows[0].id as number;
+    await identityPool.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'viewer')`, [orgId, userId]);
+    const sid = `role-test-${userId}-${stamp.toString(16)}`;
+    await identityPool.query(`INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, now() + interval '1 hour')`, [sid, userId]);
+
+    try {
+      const ctx = await resolveSessionContext(new Request("http://t.local/x", { headers: { cookie: `agentmr_sid=${sid}` } }));
+      expect(ctx, "session must resolve").toBeTruthy();
+      expect(ctx!.orgId).toBe(orgId);
+      expect(ctx!.userId).toBe(userId);
+      expect(ctx!.role, "effective role must come from org_members (viewer), not users.role (admin)").toBe("viewer");
+    } finally {
+      await identityPool.query(`DELETE FROM sessions WHERE id = $1`, [sid]).catch(() => undefined);
+      await identityPool.query(`DELETE FROM users WHERE id = $1`, [userId]).catch(() => undefined);
+      await identityPool.query(`DELETE FROM organizations WHERE id = $1`, [orgId]).catch(() => undefined);
     }
   });
 });

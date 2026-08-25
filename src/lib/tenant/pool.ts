@@ -88,7 +88,12 @@ const tenantPool: Pool = new Proxy(rawPool, {
 
 export const db = drizzle(tenantPool);
 
-export const rawDbPool = rawPool; // for identity-plane queries (no RLS concern)
+// Identity-plane pool (organizations/users/sessions/api_keys/org_members -
+// no RLS by design: the proxy resolves the tenant FROM these tables before
+// any tenant context exists).
+// SECURITY: never use this pool for tenant data - queries here run without
+// a tenant context and bypass RLS. Tenant queries go through `db`.
+export const identityPool = rawPool;
 
 /**
  * Run `fn` inside a tenant: pins ONE connection, opens a transaction, and

@@ -1,8 +1,9 @@
 // Unified Tool Layer: each tool routes to one or several platform "adapters"
 // (Google Ads, Яндекс.Директ, Авито) through the unified data model.
 
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, sql } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
+import { STRATEGIES, resolveStrategy } from "@/lib/adapters/yandex-direct/strategy";
 import {
   campaigns,
   chats,
@@ -522,7 +523,20 @@ export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
   const platform = (i.platforms[0] ?? "google") as Platform;
   const name = String(i.params.name ?? "Новая кампания (создана агентом)");
   const budget = Number(i.params.budget ?? 2000);
-  const strategy = platform === "avito" ? "Продвижение «Турбо»" : "Максимум кликов (автостратегия)";
+  // Strategy is resolved ONCE through the shared mapping (E.1): the preview
+  // label is exactly what the adapter will build at the provider.
+  const strategyKey = platform === "avito" ? "maximum_clicks" : resolveStrategy(i.params.strategy as string | undefined);
+  const strategyLabel = platform === "avito" ? "Продвижение «Турбо»" : STRATEGIES[strategyKey].label;
+
+  const params: Record<string, unknown> = { platform, name, budget, strategy: strategyKey };
+  if (typeof i.params.url === "string" && i.params.url) params.url = i.params.url;
+  if (typeof i.params.ad_group_name === "string" && i.params.ad_group_name) params.adGroupName = i.params.ad_group_name;
+  if (typeof i.params.title === "string" && i.params.title) params.title = i.params.title;
+  if (typeof i.params.text === "string" && i.params.text) params.text = i.params.text;
+  const kwList = Array.isArray(i.params.keywords) ? i.params.keywords.map(String) : undefined;
+  if (kwList) params.keywords = kwList;
+  if (Array.isArray(i.params.negative_keywords)) params.negativeKeywords = i.params.negative_keywords.map(String);
+  if (Array.isArray(i.params.region_ids)) params.regionIds = i.params.region_ids.map(Number);
 
   return {
     result: {
@@ -530,13 +544,50 @@ export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
       title: `Создание кампании в ${PLATFORM_LABEL[platform]}`,
       changes: [
         { entity: "Кампания", name, before: "—", after: `Будет создана · бюджет ${fmtMoney(budget)}/день` },
-        { entity: "Стратегия", name: strategy, note: "Можно изменить после запуска" },
+        { entity: "Стратегия", name: strategyLabel, note: "Применится на провайдере ровно эта стратегия" },
+        ...(kwList?.length ? [{ entity: "Ключевые фразы", name: `${kwList.length} шт.`, note: "будут созданы в группе" }] : []),
       ],
       cost: budget,
       verdict: "pending",
     },
-    pending: { params: { platform, name, budget, strategy }, costDaily: budget },
-    auditSummary: `Создание кампании «${name}» в ${PLATFORM_LABEL[platform]} (${fmtMoney(budget)}/день)`,
+    pending: { params, costDaily: budget },
+    auditSummary: `Создание кампании «${name}» в ${PLATFORM_LABEL[platform]} (${fmtMoney(budget)}/день, ${strategyLabel})`,
+  };
+}
+
+// ─── delete_created_campaign (write — saga compensation) ───────────────────
+export async function deleteCreatedCampaign(i: ParsedIntent): Promise<ToolOutput> {
+  const platform = (i.platforms[0] ?? "yandex") as Platform;
+  const name = String(i.params.name ?? "").trim();
+  if (!name) {
+    return {
+      result: { kind: "text", text: "Не удаляю: укажите название кампании (например, как в сообщении о частичном создании)." },
+      auditSummary: "Удаление отменено: не указано название кампании",
+    };
+  }
+  // Find the local mirror row (by exact name or by its correlation tag).
+  const rows = await db
+    .select({ id: campaigns.id, name: campaigns.name, platform: campaigns.platform })
+    .from(campaigns)
+    .where(and(eq(campaigns.platform, platform), ilike(campaigns.name, `%${name.replace(/%/g, "")}%`)))
+    .limit(5);
+  const match = rows.find((r) => r.name === name) ?? rows[0];
+  if (!match) {
+    return {
+      result: { kind: "text", text: `Не нашёл такую кампанию: в локальном зеркале ${PLATFORM_LABEL[platform]} нет кампании, похожей на «${name}». Если она создана частично — проверьте название в сообщении о сбое.` },
+      auditSummary: "Удаление отменено: кампания не найдена в локальном зеркале",
+    };
+  }
+  return {
+    result: {
+      kind: "preview",
+      title: `Удаление кампании «${match.name}» и её дерева`,
+      changes: [{ entity: "Кампания", name: match.name, before: "создана (полностью или частично)", after: "будет удалена на провайдере (объявления → ключи → группа → кампания)" }],
+      cost: 0,
+      verdict: "pending",
+    },
+    pending: { params: { platform, campaignId: match.id }, costDaily: 0 },
+    auditSummary: `Удаление созданной кампании «${match.name}» в ${PLATFORM_LABEL[platform]} (compensation)`,
   };
 }
 

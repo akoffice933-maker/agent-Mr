@@ -4,12 +4,12 @@
 
 import { isAuthRequired } from "@/lib/auth-policy";
 import { readSessionCookie } from "@/lib/auth/cookies";
-import { rawDbPool, type TenantContext } from "./pool";
+import { identityPool, type TenantContext } from "./pool";
 
 export async function resolveSessionContext(req: Request): Promise<TenantContext | null> {
   const sid = readSessionCookie(req);
   if (!sid) return null;
-  const r = await rawDbPool.query(
+  const r = await identityPool.query(
     `SELECT u.id AS user_id, m.org_id, m.role
        FROM sessions s
        JOIN users u ON u.id = s.user_id
