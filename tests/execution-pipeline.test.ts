@@ -14,7 +14,7 @@
 // Requires a real PostgreSQL instance (DATABASE_URL must point to a working DB
 // with the schema applied). Skips gracefully when unavailable.
 
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { beforeAll, beforeEach, afterAll, describe, it, expect } from "vitest";
 import { createSimulator, type SimCampaign } from "@/lib/adapters/yandex-direct/simulator";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
@@ -54,6 +54,14 @@ beforeAll(async () => {
   localB = rows[1].id;
 });
 
+// Reset local mirror status before each test — the `it()` blocks below must
+// not depend on side effects left by previous tests (each scenario assumes
+// a known starting state).
+beforeEach(async () => {
+  if (!dbAvailable) return;
+  await db.update(campaigns).set({ status: "active" }).where(inArray(campaigns.id, [localA, localB]));
+});
+
 afterAll(async () => {
   await db.delete(campaigns).where(inArray(campaigns.id, [localA, localB])).catch(() => undefined);
 });
@@ -66,7 +74,7 @@ function clientWith(sim: ReturnType<typeof createSimulator>) {
 
 describe.skipIf(!dbAvailable)("Phase E: execution pipeline (write → read-back → verified)", () => {
   it("E4: suspend → provider response → read-back → VERIFIED", async () => {
-    const sim = createSimulator({ campaigns: [...simCampaigns] });
+    const sim = createSimulator({ campaigns: simCampaigns.map((c) => ({ ...c })) });
     const client = clientWith(sim);
     const res = await client.execute({ kind: "campaign_status", campaignIds: [localA, localB], status: "paused" });
     expect(res.ok).toBe(true);
@@ -82,7 +90,7 @@ describe.skipIf(!dbAvailable)("Phase E: execution pipeline (write → read-back 
   });
 
   it("E4: resume → read-back → VERIFIED (state returns to ON)", async () => {
-    const sim = createSimulator({ campaigns: [...simCampaigns] });
+    const sim = createSimulator({ campaigns: simCampaigns.map((c) => ({ ...c })) });
     const client = clientWith(sim);
     await client.execute({ kind: "campaign_status", campaignIds: [localA], status: "paused" });
     expect(sim.state.campaigns.find((c) => c.Id === 100)?.State).toBe("SUSPENDED");
@@ -93,7 +101,7 @@ describe.skipIf(!dbAvailable)("Phase E: execution pipeline (write → read-back 
   });
 
   it("E7: transient provider failure → retry → VERIFIED", async () => {
-    const sim = createSimulator({ campaigns: [...simCampaigns] });
+    const sim = createSimulator({ campaigns: simCampaigns.map((c) => ({ ...c })) });
     sim.injectTransientFailures(2); // first 2 write attempts fail with a transient error
     const client = clientWith(sim);
     const res = await client.execute({ kind: "campaign_status", campaignIds: [localA], status: "paused" });
@@ -104,7 +112,7 @@ describe.skipIf(!dbAvailable)("Phase E: execution pipeline (write → read-back 
   });
 
   it("E7: permanent provider failure → FAILED (no retry, not verified, state unchanged)", async () => {
-    const sim = createSimulator({ campaigns: [...simCampaigns] });
+    const sim = createSimulator({ campaigns: simCampaigns.map((c) => ({ ...c })) });
     sim.injectPermanentFailure("Campaign locked by moderation");
     const client = clientWith(sim);
     const res = await client.execute({ kind: "campaign_status", campaignIds: [localA], status: "paused" });
@@ -134,7 +142,7 @@ describe.skipIf(!dbAvailable)("Phase E: execution pipeline (write → read-back 
   });
 
   it("E6: idempotency — re-applying an already-verified suspend is a no-op", async () => {
-    const sim = createSimulator({ campaigns: [...simCampaigns] });
+    const sim = createSimulator({ campaigns: simCampaigns.map((c) => ({ ...c })) });
     const client = clientWith(sim);
     const first = await client.execute({ kind: "campaign_status", campaignIds: [localA], status: "paused" });
     expect(first.verified).toBe(true);

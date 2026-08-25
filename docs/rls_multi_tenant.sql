@@ -5,11 +5,16 @@ CREATE OR REPLACE FUNCTION public.tenant_org_id() RETURNS integer AS $$
   SELECT NULLIF(current_setting('app.org_id', true), '')::int
 $$ LANGUAGE sql STABLE;
 
+-- Identity/credential plane (organizations, org_members, api_keys) is
+-- intentionally EXCLUDED from this list: the proxy resolves the tenant
+-- context FROM these tables before app.org_id exists (chicken-and-egg),
+-- so RLS on them would break auth itself. This must stay in sync with
+-- IDENTITY_TABLES in scripts/rls-audit.ts.
 DO $$
 DECLARE
   t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['accounts','campaigns','audit_log','chat_messages','oauth_tokens','pending_actions','recommendations','settings','api_keys','org_members','organizations','oauth_states']
+  FOREACH t IN ARRAY ARRAY['accounts','campaigns','audit_log','chat_messages','oauth_tokens','pending_actions','recommendations','settings','oauth_states','metrics_daily','keywords','negative_keywords','avito_chats']
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
@@ -17,12 +22,6 @@ BEGIN
   END LOOP;
 END $$;
 
-CREATE POLICY tenant_isolation ON organizations FOR ALL
-  USING (id = public.tenant_org_id()) WITH CHECK (id = public.tenant_org_id());
-CREATE POLICY tenant_isolation ON org_members FOR ALL
-  USING (org_id = public.tenant_org_id()) WITH CHECK (org_id = public.tenant_org_id());
-CREATE POLICY tenant_isolation ON api_keys FOR ALL
-  USING (org_id = public.tenant_org_id()) WITH CHECK (org_id = public.tenant_org_id());
 CREATE POLICY tenant_isolation ON oauth_states FOR ALL
   USING (organization_id = public.tenant_org_id()) WITH CHECK (organization_id = public.tenant_org_id());
 CREATE POLICY tenant_isolation ON accounts FOR ALL

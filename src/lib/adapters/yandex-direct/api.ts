@@ -43,7 +43,10 @@ export class DirectApi {
         const transport = this.transport ?? this.httpTransport();
         const raw = (await transport(service, method, params)) as YandexResponse<T>;
         // API-level errors: retry only transient-looking ones (server-side codes).
-        if (raw.errors?.length && !raw.result) {
+        // NOTE: per the documented contract above, `result` and `errors` can both
+        // be present in the same response (e.g. empty SuspendResults alongside a
+        // Code 13 server error) — errors must be checked regardless of `result`.
+        if (raw.errors?.length) {
           const transient = raw.errors.every((e) => e.Code >= 1000 || e.Code === 13); // 13 = server internal
           const err = new Error(`Direct API error: ${raw.errors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`) as Error & { transient?: boolean };
           err.transient = transient;

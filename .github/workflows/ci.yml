@@ -20,6 +20,20 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,15 +51,27 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests
-        # Unit tests are DB-free (vitest setup provides a dummy DATABASE_URL)
+      - name: Apply schema + RLS to CI database
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+        run: npm run migrate && psql "$DATABASE_URL" -f docs/rls_multi_tenant.sql
+
+      - name: RLS audit (regression guard — must stay green)
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+        run: npx tsx scripts/rls-audit.ts
+
+      - name: Unit + integration tests (real Postgres — no more skipped DB tests)
+        env:
+          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+          DATABASE_TEST_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+          ENCRYPTION_KEY: ci-only-encryption-key-32-chars-min
         run: npm run test
 
       - name: Production build
-        # Build-time imports instantiate the pg pool lazily; a dummy URL is enough.
         env:
           DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
-          ENCRYPTION_KEY: ci-only-encryption-key
+          ENCRYPTION_KEY: ci-only-encryption-key-32-chars-min
         run: npm run build
 
   clients:

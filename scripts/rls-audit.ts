@@ -34,6 +34,7 @@ export const DIRECT_TENANT_TABLES: string[] = [
   "pending_actions",
   "recommendations",
   "settings",
+  "oauth_states",
 ];
 
 export const DERIVED_TENANT_TABLES: string[] = ["metrics_daily", "keywords", "negative_keywords", "avito_chats"];
