@@ -28,7 +28,7 @@ dry-run предпросмотр → **человек подтверждает**
 | 📡 **Клиенты** | Web UI · Telegram-бот (`/report` `/audit` `/pending`) · MCP-сервер (6 tools) — один REST API |
 | 🏭 **Production** | Яндекс.Директ: готов (OAuth, API v5, Метрика) · Google Ads: sandbox · Авито: sandbox |
 
-Полное техническое задание: [`docs/TZ.md`](docs/TZ.md) (v2.1) · Production Hardening план: [`docs/HARDENING.md`](docs/HARDENING.md) · Гайд подключения Директа: [`docs/YANDEX_SETUP.md`](docs/YANDEX_SETUP.md)
+Документация: [установка](docs/SETUP.md) · [руководство пользователя](docs/USAGE.md) · [roadmap](docs/ROADMAP.md) · [гайд Директа](docs/YANDEX_SETUP.md) · [TЗ](docs/TZ.md) · [hardening-план](docs/HARDENING.md) · [E2E-чек-лист](docs/YANDEX_E2E.md)
 
 ## Как начать за 10 минут
 
@@ -42,7 +42,7 @@ cp .env.example .env
 #    минимум: DATABASE_URL + ENCRYPTION_KEY (произвольная строка ≥ 16 символов)
 
 # 3. База данных + демо-данные
-npx drizzle-kit migrate     # создаёт схему (12 таблиц)
+npm run migrate         # применяет схему (5 миграций из drizzle/)
 npm run seed                # кабинет «Ромашка Мебель»: 20 кампаний/объявлений, 28 дней метрик
 
 # 4. Запуск
@@ -81,22 +81,23 @@ Google Ads и Авито: адаптеры готовы, остаются в san
 - [`demo/assets/demo-report.mp4`](demo/assets/demo-report.mp4) — сводный расход + кросс-платформенный отчёт (12 с)
 - Статичный демо-сайт с живым чатом (RU/EN): <https://akoffice933-maker.github.io/agent-Mr/>
 
-## 14-дневный план — статус
+## Текущий статус
 
-| Период | Задача | Статус |
-|---|---|---|
-| День 1 | Регистрация приложения в Яндексе | 📋 гайд готов: `docs/YANDEX_SETUP.md` — осталось выполнить руками |
-| Дни 2–3 | Production-адаптер Директа (sync кампаний/статистики/ключей) | ✅ готов (ждёт реальный токен) |
-| День 4 | Write-операции: пауза/запуск, ставки, бюджеты, минус-фразы | ✅ готов |
-| День 5 | Конверсии из Метрики (reachedGoal по дням) | ✅ готов (ждёт METRIKA_* ключи) |
-| День 6 | Preview опасных действий + audit-log | ✅ готов (предпросмотр с before/after, trace, re-check лимитов при подтверждении) |
-| День 7 | Полный цикл: подключение → синк → аудит → пауза → отчёт | ⏳ ждёт боевого кабинета |
-| Дни 8–9 | Кросс-платформенный отчёт + Advisor | ✅ страница `/report` |
-| День 10 | Онбординг после OAuth («вот что я нашёл») | ✅ баннер с авто-синком после подключения |
-| День 11 | «Только чтение» по умолчанию + явное включение | ✅ default `readOnly=true` + confirm при включении |
-| День 12 | Telegram: отчёты, аудит, pending-действия | ✅ `/report`, `/audit`, `/pending` + кнопки |
-| День 13 | Демо-видео | ✅ 2 mp4 в `demo/assets/` |
-| День 14 | README «Как начать» | ✅ (этот раздел) |
+| Блок | Статус |
+|---|---|
+| LLM-ядро + rule-based fallback, 13 команд | ✅ |
+| Safety: read-only по умолчанию, dry-run, лимиты, approval, re-check, audit | ✅ |
+| Production hardening A–E.1: fail-closed auth, сессии, **RLS (FORCE, 13 таблиц)**, RBAC (5 ролей + риск-слой), **read-back VERIFIED**, **идемпотентное создание кампаний** + saga-состояние | ✅ |
+| Яндекс.Директ: production-адаптер (OAuth + API v5 + Метрика) | ✅ готов (E2E ждёт одобрения заявки на API-доступ Директа) |
+| Google Ads / Авито: адаптеры | ✅ sandbox |
+| Клиенты: Web UI · Telegram · MCP | ✅ |
+| Тесты + CI (реальный Postgres, RLS-аудит) | ✅ 91 тест |
+| Боевой supervised E2E на реальных деньгах | ⏳ следующий шаг — [ROADMAP.md](docs/ROADMAP.md) |
+
+Полное техническое задание — [`docs/TZ.md`](docs/TZ.md) · план hardening —
+[`docs/HARDENING.md`](docs/HARDENING.md) · статус и план —
+[`docs/ROADMAP.md`](docs/ROADMAP.md) · установка — [`docs/SETUP.md`](docs/SETUP.md) ·
+руководство пользователя — [`docs/USAGE.md`](docs/USAGE.md)
 
 ## Модель безопасности (pipeline)
 
@@ -158,8 +159,7 @@ npm install
 cp .env.example .env        # минимум: DATABASE_URL + ENCRYPTION_KEY
 
 # 3. Схема БД
-npx drizzle-kit migrate     # примени drizzle-мigrations
-# (если drizzle-kit migrate недоступен: psql -f drizzle/0000_*.sql -f drizzle/0001_*.sql)
+npm run migrate         # применяет миграции из drizzle/
 
 # 4. Демо-данные (фирма «Ромашка Мебель»: 6 кампаний Google, 6 Директа, 8 объявлений Авито, 28 дней метрик)
 npm run seed
@@ -321,7 +321,7 @@ Long polling — публичный URL не требуется.
 
 ```bash
 npm run typecheck   # TypeScript
-npm run test        # vitest: rule-парсер, policy engine, advisor, crypto, auth, format (44 теста)
+npm run test        # vitest: 91 тест — unit + интеграция (RLS-аудит, execution pipeline, OAuth security)
 cd mcp-server && npm run selftest   # MCP против работающего приложения
 cd telegram-bot && npm run selftest # форматирование ответов
 ```
@@ -350,24 +350,14 @@ PostgreSQL (Drizzle): campaigns, metrics_daily, keywords, avito_chats,
 
 Подробности: [`docs/TZ.md`](docs/TZ.md).
 
-## Статус по этапам ТЗ
+## Статус и план
 
-| Этап | Статус |
-|---|---|
-| 0. Прототип: UI, схема БД, safety, rule-парсер, seed | ✅ |
-| 0.1. Код в репозитории | ✅ |
-| 1. LLM (OpenRouter, tool calling) + fallback | ✅ (ключ в `.env` не требуется для работы в fallback-режиме) |
-| 2. Session Context | ✅ |
-| 3–5. Адаптеры Google/Директ/Авито + OAuth + `oauth_tokens` | ✅ (sandbox проверен; production-клиенты ждут боевые ключи) |
-| 6. Cross-Platform Advisor | ✅ |
-| 7. MCP-сервер | ✅ |
-| 8. Telegram-бот | ✅ (ждёт `TELEGRAM_BOT_TOKEN`) |
-| 9. Тесты, документация, деплой | ✅ unit-тесты, README, Docker Compose; интеграционные тесты — follow-up |
+Всё по этапам ТЗ выполнено; поверх — production hardening A–E.1
+(см. [`docs/HARDENING.md`](docs/HARDENING.md)). Актуальный статус, что ждёт
+внешних условий (заявка на API Директа) и следующие шаги (E2E → rate limiting
+→ onboarding → биллинг → Google/Avito production → multi-customer) —
+**[`docs/ROADMAP.md`](docs/ROADMAP.md)**.
 
-## Следующие шаги (после 14-дневного плана)
+## Лицензия
 
-- Полный production-цикл по Директу на боевом кабинете (День 7 плана)
-- Бюджетные операции Google Ads на стороне платформы (campaign budget resource) + прод-прогон Google
-- Мультитенантность и роли пользователей (ТЗ, раздел 13)
-- Контроль расходов на LLM (биллинг OpenRouter)
-- Интеграционные тесты (playwright)
+MIT — см. [LICENSE](LICENSE).
