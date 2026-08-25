@@ -8,7 +8,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "migrate": "drizzle-kit migrate",
+    "migrate": "node scripts/migrate.mjs",
     "seed": "tsx src/db/seed.ts",
     "create-user": "tsx src/db/create-user.ts",
     "audit:rls": "tsx scripts/rls-audit.ts",
