@@ -22,7 +22,7 @@ import { beforeAll, afterAll, beforeEach, describe, it, expect } from "vitest";
 import { createSimulator, type SimCampaign } from "@/lib/adapters/yandex-direct/simulator";
 import { eq, inArray } from "drizzle-orm";
 import { db, withTenant } from "@/db";
-import { campaigns } from "@/db/schema";
+import { campaigns, organizations } from "@/db/schema";
 import { createYandexClient } from "@/lib/adapters/yandex-direct/client";
 
 const ctx = { orgId: 1, userId: null, role: "admin" };
@@ -41,6 +41,14 @@ let localA = 0;
 let localB = 0;
 
 beforeAll(async () => {
+  await withTenant(ctx, async () => {
+    // Self-contained: guarantee organization #1 exists (CI runs migrations but
+    // not the seed, so the table would be empty and the FK below would fail).
+    const existing = await db.select().from(organizations).where(eq(organizations.id, 1)).limit(1);
+    if (existing.length === 0) {
+      await db.insert(organizations).values({ name: "Test" }).onConflictDoNothing();
+    }
+  });
   // Insert the local mirror campaigns with externalIds matching the simulator's Ids.
   await withTenant(ctx, async () => {
     const rows = await db
