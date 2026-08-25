@@ -76,35 +76,51 @@ describe.skipIf(!dbUrl)("tenant security (requires DATABASE_TEST_URL)", () => {
     //    any session value
     const c3 = (await rawDbPool.connect()) as unknown as PgLike;
     await c3.query("SELECT set_config('app.org_id', $1, false)", ["777"]);
-    c3.release();
-    await withTenant({ orgId: 1, userId: null, role: "admin" }, async () => {
-      const r = await db.execute(sql`SELECT current_setting('app.org_id', true) AS v`);
-      const v = (r as unknown as { rows: { v: string | null }[] }).rows[0].v;
-      expect(v, "app path must be immune to stale session values").toBe("1");
-    });
-    // and the app path still leaves its own connection clean
+    try {
+      await withTenant({ orgId: 1, userId: null, role: "admin" }, async () => {
+        const r = await db.execute(sql`SELECT current_setting('app.org_id', true) AS v`);
+        const v = (r as unknown as { rows: { v: string | null }[] }).rows[0].v;
+        expect(v, "app path must be immune to stale session values").toBe("1");
+      });
+    } finally {
+      // Clean up the deliberate misuse BEFORE releasing, so the shared pool
+      // is never left with a poisoned session value.
+      await c3.query("SELECT set_config('app.org_id', NULL, false)").catch(() => undefined);
+      c3.release();
+    }
+    // and the pool is fully clean afterwards (no stale values on any client)
     for (let i = 0; i < rawDbPool.totalCount; i++) {
       const c = (await rawDbPool.connect()) as unknown as PgLike;
       try {
-        const v = await sessionSetting(c);
-        if (v !== null && v !== "" && v !== "777") {
-          throw new Error(`unexpected tenant context '${v}' on pooled connection #${i}`);
-        }
+        expect(await sessionSetting(c) ?? "", `pooled connection #${i} leaked tenant context`).toBe("");
       } finally {
         c.release();
       }
     }
   });
 
-  it("fail-closed: a query without tenant context sees 0 campaigns", async () => {
-    const { rawDbPool } = await import("../../src/lib/tenant/pool");
-    const c = (await rawDbPool.connect()) as unknown as PgLike;
+  it("fail-closed: a query without tenant context sees 0 campaigns (never errors)", async () => {
+    // Dedicated pool: this test deliberately probes "no context" and "empty
+    // context" states on a live connection — it must not run on (or poison)
+    // the app's shared pool.
+    const p = new Pool({ connectionString: dbUrl, connectionTimeoutMillis: 1500 });
     try {
-      await c.query("SELECT set_config('app.org_id', $1, false)", [""]);
+      const c = await p.connect();
+      // A fresh connection has no tenant context at all.
+      expect(
+        (await c.query("SELECT current_setting('app.org_id', true) AS v")).rows[0].v,
+        "fresh connection must have no tenant context"
+      ).toBeNull();
       const r = await c.query("SELECT count(*)::text AS n FROM campaigns");
-      expect(r.rows[0].n).toBe("0");
-    } finally {
+      expect(r.rows[0].n, "no context → 0 rows").toBe("0");
+      // An explicitly EMPTY context must fail closed the same way — and must
+      // NOT raise (NULLIF in the policy, see drizzle/0002).
+      await c.query("SELECT set_config('app.org_id', $1, false)", [""]);
+      const r2 = await c.query("SELECT count(*)::text AS n FROM campaigns");
+      expect(r2.rows[0].n, "empty context → 0 rows, no error").toBe("0");
       c.release();
+    } finally {
+      await p.end();
     }
   });
 });

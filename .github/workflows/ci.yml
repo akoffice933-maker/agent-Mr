@@ -21,19 +21,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
+      # Real Postgres so the tenant-security integration tests (RLS audit,
+      # fail-closed, no context leak) actually run in CI — the category of
+      # regression that used to slip through when they were skipped.
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: ci
-          POSTGRES_PASSWORD: ci
-          POSTGRES_DB: ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s
-          --health-timeout 5s
+          --health-timeout 3s
           --health-retries 10
+    env:
+      DATABASE_URL: postgresql://appuser:apppass@127.0.0.1:5432/app_db
+      DATABASE_TEST_URL: postgresql://appuser:apppass@127.0.0.1:5432/app_db
     steps:
       - uses: actions/checkout@v4
 
@@ -45,33 +51,33 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      # appuser must NOT be a superuser: superusers bypass RLS even with
+      # FORCE, which would silently disable the tenant isolation under test.
+      - name: Create non-superuser app role + database
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:5432/postgres" <<'SQL'
+            CREATE ROLE appuser LOGIN PASSWORD 'apppass';
+            CREATE DATABASE app_db OWNER appuser;
+          SQL
+
+      - name: Apply migrations
+        run: npm run migrate
+
       - name: Lint
         run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Apply schema + RLS to CI database
-        env:
-          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
-        run: npm run migrate && psql "$DATABASE_URL" -f docs/rls_multi_tenant.sql
+      - name: RLS audit (live DB)
+        run: npm run audit:rls
 
-      - name: RLS audit (regression guard — must stay green)
-        env:
-          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
-        run: npx tsx scripts/rls-audit.ts
-
-      - name: Unit + integration tests (real Postgres — no more skipped DB tests)
-        env:
-          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
-          DATABASE_TEST_URL: postgresql://ci:ci@127.0.0.1:5432/ci
-          ENCRYPTION_KEY: ci-only-encryption-key-32-chars-min
+      - name: Test suite (unit + integration, against real Postgres)
         run: npm run test
 
       - name: Production build
         env:
-          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
-          ENCRYPTION_KEY: ci-only-encryption-key-32-chars-min
+          ENCRYPTION_KEY: ci-only-encryption-key
         run: npm run build
 
   clients:

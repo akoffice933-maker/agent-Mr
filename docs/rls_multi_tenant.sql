@@ -1,3 +1,7 @@
+-- NOTE (Phase E): the canonical, versioned RLS now lives in drizzle
+-- migrations 0001-0003 (applied by `npm run migrate`). This script is kept
+-- for manual/legacy environments and is idempotent; it must stay in sync
+-- with the migrations and with scripts/rls-audit.ts.
 -- RLS: tenant isolation (multi-tenancy phase).
 -- NOT applied in the single-tenant phase. Apply when multi-tenancy is implemented
 -- and the app sets app.org_id per-request (via the pool's withTenant).

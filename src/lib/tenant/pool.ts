@@ -2,7 +2,7 @@
 //
 // How isolation is guaranteed:
 //   1. Postgres RLS (FORCE) on every client-data table — the database itself
-//      filters by `app.org_id` (see drizzle/0004_tenant_isolation.sql).
+//      filters by `app.org_id` (see drizzle/0001_tenant_isolation.sql).
 //   2. This module binds `app.org_id` to ONE pinned connection per tenant
 //      context (AsyncLocalStorage). Every drizzle query in the request is
 //      routed to that connection — so set_config and the data query can never
@@ -118,7 +118,15 @@ export async function withTenant<T>(ctx: TenantContext, fn: (ctx: TenantContext)
       __client: client as PoolClientLike,
       __queue: Promise.resolve(),
     };
-    const result = await als.run(store, () => fn(ctx));
+    // IMPORTANT: the fn's result is consumed INSIDE the als.run callback (via
+    // the async wrapper). Drizzle queries are thenables: the actual pg query
+    // is dispatched when the thenable is consumed (.then), not when it is
+    // built. If a callback returns a query without awaiting it internally
+    // (e.g. `() => db.select()...`), consumption would happen in this
+    // function's frame — OUTSIDE the ALS context — and the pool proxy would
+    // silently fall back to a plain pooled connection (no tenant, RLS 0 rows).
+    // The wrapper makes withTenant safe for both sync and async callbacks.
+    const result = await als.run(store, async () => await fn(ctx));
     await client.query("COMMIT");
     return result;
   } catch (e) {

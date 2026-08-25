@@ -25,14 +25,16 @@
     "tsx": "^4.23.12"
   },
   "devDependencies": {
+    "@pg-ts/pg-embedded-linux-x64-gnu": "^0.2.3",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "drizzle-kit": "^0.18.1",
+    "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
+    "pg-embedded": "^0.2.3",
     "postcss": "8.5.26",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",

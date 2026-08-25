@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { db } from "./index";
+import { db, withTenant } from "./index";
 import {
   accounts,
   auditLog,
@@ -83,7 +83,15 @@ const AVITO: CampSpec[] = [
   { platform: "avito", kind: "listing", name: "Детская кровать-чердак", budget: 200, strategy: "Тариф «Расширенный»", price: 29900, spend: [80, 160], cpc: [1, 1], ctr: 0, cvr: 0, views: [18, 34] },
 ];
 
+// Seed data is tenant-scoped: with FORCE RLS (drizzle/0001) every insert must
+// carry the tenant context. Run the whole seed inside org #1.
 async function main() {
+  return withTenant({ orgId: ORG, userId: null, role: "seed" }, runSeed).then(() => {
+    process.exit(0);
+  });
+}
+
+async function runSeed() {
   const org = (await db.select().from(organizations).limit(1))[0];
   if (!org) {
     await db.insert(organizations).values({ name: "Default" });
@@ -291,7 +299,6 @@ async function main() {
   });
 
   console.log("✓ Сид завершён.");
-  process.exit(0);
 }
 
 // helper to reference pendingActions without import order issues

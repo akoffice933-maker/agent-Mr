@@ -30,6 +30,7 @@ export const DIRECT_TENANT_TABLES: string[] = [
   "campaigns",
   "audit_log",
   "chat_messages",
+  "oauth_states",
   "oauth_tokens",
   "pending_actions",
   "recommendations",
