@@ -42,6 +42,16 @@ export class DirectApi {
       try {
         const transport = this.transport ?? this.httpTransport();
         const raw = (await transport(service, method, params)) as YandexResponse<T>;
+        // Envelope error: Direct sometimes answers with a top-level
+        // { error: { error_code, error_detail, error_string } } object (e.g.
+        // 58 "Incomplete registration" — the app's Direct access request is
+        // not approved yet). Permanent by nature: fail fast with the real
+        // message instead of an opaque "empty body".
+        const envErr = (raw as unknown as { error?: { error_code?: number; error_detail?: string; error_string?: string } }).error;
+        if (envErr) {
+          const msg = `Direct API error ${envErr.error_code ?? "?"}: ${envErr.error_detail ?? envErr.error_string ?? "unknown"}`;
+          throw Object.assign(new Error(msg), { transient: false });
+        }
         // API-level errors: retry only transient-looking ones (server-side codes).
         // NOTE: per the documented contract above, `result` and `errors` can both
         // be present in the same response (e.g. empty SuspendResults alongside a

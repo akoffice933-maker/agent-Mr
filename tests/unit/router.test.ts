@@ -117,3 +117,55 @@ describe("parseIntent — rule-based intent parser", () => {
     expect(i.period.days).toBe(30);
   });
 });
+
+describe("create_campaign — full ad-tree spec (E2E runbook grammar)", () => {
+  it("парсит полный spec: группа, объявление, ключи, минус-фразы (регистра сохраняется)", () => {
+    const i = parseIntent(
+      "Создай кампанию в Яндекс Директ под названием «AgentMr E2E Test», бюджет 300/день, " +
+        "группа «E2E группа», заголовок «Ремонт квартир под ключ», текст «Быстро, качественно, с гарантией», " +
+        "url https://romashka.test/remont, ключи: ремонт квартир, ремонт квартиры под ключ, отделка квартир; " +
+        "минус-фразы: бесплатно, работа"
+    );
+    expect(i.tool).toBe("create_campaign");
+    expect(i.platforms).toEqual(["yandex"]);
+    expect(i.params.name).toBe("AgentMr E2E Test");
+    expect(i.params.budget).toBe(300);
+    expect(i.params.adGroupName).toBe("E2E группа");
+    expect(i.params.title).toBe("Ремонт квартир под ключ");
+    expect(i.params.text).toBe("Быстро, качественно, с гарантией");
+    expect(i.params.url).toBe("https://romashka.test/remont");
+    expect(i.params.keywords).toEqual(["ремонт квартир", "ремонт квартиры под ключ", "отделка квартир"]);
+    expect(i.params.negativeKeywords).toEqual(["бесплатно", "работа"]);
+  });
+
+  it("голое создание без маркеров — прежний минимум (никаких догадок)", () => {
+    const i = parseIntent("Создай кампанию в Яндекс Директ под названием «Тест», бюджет 500/день");
+    expect(i.tool).toBe("create_campaign");
+    expect(i.params).toEqual({ name: "Тест", budget: 500 });
+  });
+
+  it("только группа — adGroupName без объявления и ключей", () => {
+    const i = parseIntent("Создай кампанию «X», бюджет 200/день, группа «Главная»");
+    expect(i.tool).toBe("create_campaign");
+    expect(i.params.adGroupName).toBe("Главная");
+    expect(i.params.title).toBeUndefined();
+    expect(i.params.keywords).toBeUndefined();
+  });
+
+  it("объявление all-or-nothing: заголовок без текста/URL — не передаётся", () => {
+    const i = parseIntent("Создай кампанию «X», бюджет 200/день, заголовок «Только заголовок»");
+    expect(i.params.title).toBeUndefined();
+    expect(i.params.url).toBeUndefined();
+  });
+
+  it("ключи без маркера «ключи:» не подхватываются", () => {
+    const i = parseIntent("Создай кампанию «X» по запросу ремонт квартир, бюджет 200/день");
+    expect(i.params.keywords).toBeUndefined();
+  });
+
+  it("«минус-фразы» БЕЗ создания кампаний — прежний инструмент add_negative_keywords (регрессия)", () => {
+    const i = parseIntent("Добавь минус-фразы «бесплатно», «работа» в кампанию «Поиск — Кухни»");
+    expect(i.tool).toBe("add_negative_keywords");
+    expect(i.params.words).toContain("бесплатно");
+  });
+});

@@ -538,6 +538,9 @@ export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
   if (Array.isArray(i.params.negative_keywords)) params.negativeKeywords = i.params.negative_keywords.map(String);
   if (Array.isArray(i.params.region_ids)) params.regionIds = i.params.region_ids.map(Number);
 
+  const adGroupName = typeof params.adGroupName === "string" ? (params.adGroupName as string) : undefined;
+  const hasAd = Boolean(params.title && params.text && params.url);
+
   return {
     result: {
       kind: "preview",
@@ -545,7 +548,12 @@ export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
       changes: [
         { entity: "Кампания", name, before: "—", after: `Будет создана · бюджет ${fmtMoney(budget)}/день` },
         { entity: "Стратегия", name: strategyLabel, note: "Применится на провайдере ровно эта стратегия" },
+        ...(adGroupName ? [{ entity: "Группа", name: adGroupName, after: "будет создана" }] : []),
+        ...(hasAd ? [{ entity: "Объявление", name: String(params.title), note: "текст + URL как в запросе" }] : []),
         ...(kwList?.length ? [{ entity: "Ключевые фразы", name: `${kwList.length} шт.`, note: "будут созданы в группе" }] : []),
+        ...(Array.isArray(params.negativeKeywords) && (params.negativeKeywords as string[]).length
+          ? [{ entity: "Минус-фразы", name: (params.negativeKeywords as string[]).join(", ") }]
+          : []),
       ],
       cost: budget,
       verdict: "pending",

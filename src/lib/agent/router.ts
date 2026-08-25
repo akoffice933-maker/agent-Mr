@@ -110,8 +110,10 @@ export function parseIntent(raw: string): ParsedIntent {
   const period = detectPeriod(norm);
   const base = { platforms, period };
 
-  // 1. Negative keywords
-  if (/минус[-\s]?(фраз|слов|ключ|ключев)|добавь минус|исключи (слова|фразы|запросы)/.test(norm)) {
+  // 1. Negative keywords (not when the message is a create request — the
+  // create grammar below parses "минус-фразы:" as part of the full spec)
+  const isCreateRequest = /(создай|создать|запусти новую|новая кампани|сделай кампани)/.test(norm);
+  if (!isCreateRequest && /минус[-\s]?(фраз|слов|ключ|ключев)|добавь минус|исключи (слова|фразы|запросы)/.test(norm)) {
     const words = parseQuotedWords(norm);
     return { ...base, tool: "add_negative_keywords", params: { words, campaignHint: norm } };
   }
@@ -163,16 +165,47 @@ export function parseIntent(raw: string): ParsedIntent {
   }
 
   // 7. Create campaign
-  if (/(создай|создать|запусти новую|новая кампани|сделай кампани)/.test(norm)) {
+  if (isCreateRequest) {
     // Name is captured from the ORIGINAL text (case-preserving), not norm.
     const mName = raw.match(/под названием [«"']([^»"']+)[»"']/i) ?? raw.match(/названи[ея]? [«"']([^»"']+)[»"']/i);
     const mBudget = norm.match(/бюджет[а-я]*\s*(\d[\d\s]{2,9})/) ?? norm.match(/(\d[\d\s]{2,9})\s*\/?\s*день/);
     const budget = mBudget ? Math.min(500000, parseInt(mBudget[1].replace(/\s/g, ""), 10)) : 2000;
+    const params: Record<string, unknown> = { name: mName?.[1] ?? "Новая кампания (создана агентом)", budget };
+
+    // Full ad-tree spec (docs/YANDEX_E2E.md runbook). STRICT grammar: every
+    // part is parsed only behind an explicit marker, values are taken from
+    // the original text (case preserved). Nothing is guessed — a missing
+    // marker simply means "not requested". The ad (title/text/url) is
+    // all-or-nothing: a half ad is dropped rather than sent to the provider.
+    const mGroup = raw.match(/групп[аи]\s+[«"']([^»"']+)[»"']/i);
+    const mTitle = raw.match(/заголовок\s*[«"']([^»"']+)[»"']/i);
+    const mText = raw.match(/текст\s*[«"']([^»"']+)[»"']/i);
+    const mUrl = raw.match(/(?:url|ссылка|адрес)\s*:?\s*(https?:\/\/\S+)/i);
+    // \S+ swallows trailing sentence punctuation (", ".) — trim it.
+    const urlValue = mUrl?.[1] ? mUrl[1].replace(/[.,;]+$/, "") : undefined;
+    const mKeywords = raw.match(/(?:ключевые фразы|ключи)\s*:\s*([^;.]+)/i);
+    const mNegatives = raw.match(/минус[-\s]?(?:фразы|слова|ключи)?\s*:\s*([^;.]+)$/i);
+
+    if (mGroup) params.adGroupName = mGroup[1].trim();
+    if (mTitle && mText && urlValue) {
+      params.title = mTitle[1].trim();
+      params.text = mText[1].trim();
+      params.url = urlValue;
+    }
+    if (mKeywords) {
+      const kws = mKeywords[1].split(",").map((w) => w.trim()).filter(Boolean).slice(0, 1000);
+      if (kws.length) params.keywords = kws;
+    }
+    if (mNegatives) {
+      const negs = mNegatives[1].split(",").map((w) => w.trim()).filter(Boolean).slice(0, 100);
+      if (negs.length) params.negativeKeywords = negs;
+    }
+
     return {
       ...base,
       tool: "create_campaign",
       platforms: platforms.length === 1 ? platforms : platforms.length === 0 ? ["google"] : platforms,
-      params: { name: mName?.[1] ?? "Новая кампания (создана агентом)", budget },
+      params,
     };
   }
 
