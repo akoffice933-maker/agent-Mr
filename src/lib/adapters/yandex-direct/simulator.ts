@@ -15,7 +15,10 @@ export interface SimCampaign {
   Name: string;
   State: "ON" | "SUSPENDED";
   DailyBudget: number;
-  Type: "TEXT_CAMPAIGN" | "SMART_CAMPAIGN";
+  Type: "TEXT_CAMPAIGN" | "UNIFIED_CAMPAIGN" | "SMART_CAMPAIGN";
+  /** present when the campaign was created as UnifiedCampaign (ResponsiveAd-capable) */
+  UnifiedCampaign?: { BiddingStrategy: Record<string, unknown>; TrackingParams?: string };
+  TextCampaign?: { BiddingStrategy: Record<string, unknown> };
 }
 
 export interface SimAdGroup {
@@ -29,10 +32,31 @@ export interface SimAd {
   Id: number;
   AdGroupId: number;
   CampaignId: number;
-  Type: "TEXT_AD";
+  Type: "TEXT_AD" | "RESPONSIVE_AD";
   Status: "DRAFT" | "ACCEPTED" | "REJECTED";
   State: "OFF" | "ON";
-  TextAd: { Title: string; Text: string; Href: string; Mobile: "NO" };
+  TextAd?: { Title: string; Title2?: string; Text: string; Href: string; Mobile: "NO" };
+  ResponsiveAd?: {
+    Titles: string[];
+    Texts: string[];
+    Href?: string;
+    PriceExtension?: { Price: number; OldPrice?: number; PriceQualifier: "FROM" | "UP_TO" | "NONE"; PriceCurrency: string };
+    AdExtensionIds?: number[];
+    AdImageHashes?: string[];
+  };
+}
+
+export interface SimAdExtension {
+  Id: number;
+  Type: "CALLOUT";
+  Callout: { CalloutText: string };
+  State: "ON" | "DELETED";
+  Status: "DRAFT" | "ACCEPTED";
+}
+
+export interface SimAdImage {
+  Hash: string;
+  Name: string;
 }
 
 export interface SimKeyword {
@@ -50,6 +74,10 @@ export interface SimState {
   ads: SimAd[];
   keywords: SimKeyword[];
   negatives: { CampaignId: number; Keyword: string }[];
+  callouts: SimAdExtension[];
+  images: SimAdImage[];
+  /** account's Metrika goals (clients.getGoals) — empty = no goal (fallback path) */
+  goals: { Id: number; Name: string }[];
   /** synthetic daily stats: spend = budget/2 per active campaign per day */
 }
 
@@ -73,6 +101,14 @@ export interface Simulator {
   lastRequests: { service: string; method: string; params: Record<string, unknown> }[];
 }
 
+/** Deterministic content hash for the simulated adimages (stable per bytes+name). */
+function hashOf(base64: string, name: string): string {
+  let h = 0;
+  const s = `${name}:${base64.length}:${base64.slice(0, 64)}`;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return `hash-${Math.abs(h).toString(16)}-${name.replace(/[^a-z0-9.-]/gi, "_")}`;
+}
+
 export function createSimulator(initial?: Partial<SimState>): Simulator {
   const state: SimState = {
     campaigns: initial?.campaigns ?? [],
@@ -80,6 +116,9 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
     ads: initial?.ads ?? [],
     keywords: initial?.keywords ?? [],
     negatives: initial?.negatives ?? [],
+    callouts: initial?.callouts ?? [],
+    images: initial?.images ?? [],
+    goals: initial?.goals ?? [{ Id: 182453, Name: "Синтетическая цель" }],
   };
   let transientLeft = 0;
   let permanent: string | null = null;
@@ -157,11 +196,29 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
         const adds = (p.Campaigns as Record<string, any>[]) ?? [];
         const results = adds.map((c) => {
           const id = Math.max(0, ...state.campaigns.map((x) => x.Id)) + 1;
-          const bs = c.TextCampaign?.BiddingStrategy?.Search ?? {};
+          const unified = c.UnifiedCampaign != null;
+          const section = unified ? c.UnifiedCampaign : c.TextCampaign;
+          const bs = section?.BiddingStrategy?.Search ?? {};
           const weekly =
-            Number(bs.WbMaximumClicks?.WeeklySpendLimit ?? bs.WbMaximumConversions?.WeeklySpendLimit ?? 0) / 1_000_000;
+            Number(
+              bs.WbMaximumClicks?.WeeklySpendLimit ??
+                bs.WbMaximumConversions?.WeeklySpendLimit ??
+                bs.WbMaximumConversionRate?.WeeklySpendLimit ??
+                bs.AverageCpc?.WeeklySpendLimit ??
+                bs.AverageCpa?.WeeklySpendLimit ??
+                0
+            ) / 1_000_000;
           const budget = weekly > 0 ? weekly / 7 : 0;
-          state.campaigns.push({ Id: id, Name: String(c.Name), State: "ON", DailyBudget: budget, Type: "TEXT_CAMPAIGN" });
+          state.campaigns.push({
+            Id: id,
+            Name: String(c.Name),
+            State: "ON",
+            DailyBudget: budget,
+            Type: unified ? "UNIFIED_CAMPAIGN" : "TEXT_CAMPAIGN",
+            ...(unified
+              ? { UnifiedCampaign: { BiddingStrategy: section.BiddingStrategy ?? {}, ...(section.TrackingParams ? { TrackingParams: String(section.TrackingParams) } : {}) } }
+              : { TextCampaign: { BiddingStrategy: section?.BiddingStrategy ?? {} } }),
+          });
           return { Id: id };
         });
         return { result: { AddResults: results } };
@@ -273,8 +330,30 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
           const group = state.adGroups.find((g) => g.Id === groupId);
           if (!group) return { Errors: [err(270, `AdGroup ${groupId} not found`)] };
           const id = Math.max(0, ...state.ads.map((x) => x.Id)) + 1;
-          const textAd = a.TextAd ?? {};
-          state.ads.push({ Id: id, AdGroupId: groupId, CampaignId: group.CampaignId, Type: "TEXT_AD", Status: "DRAFT", State: "OFF", TextAd: { Title: String(textAd.Title), Text: String(textAd.Text), Href: String(textAd.Href), Mobile: "NO" } });
+          if (a.ResponsiveAd) {
+            const r = a.ResponsiveAd as Record<string, any>;
+            if (!Array.isArray(r.Titles) || r.Titles.length === 0) return { Errors: [err(17, "ResponsiveAd: Titles is required")] };
+            if (!Array.isArray(r.Texts) || r.Texts.length === 0) return { Errors: [err(17, "ResponsiveAd: Texts is required")] };
+            state.ads.push({
+              Id: id,
+              AdGroupId: groupId,
+              CampaignId: group.CampaignId,
+              Type: "RESPONSIVE_AD",
+              Status: "DRAFT",
+              State: "OFF",
+              ResponsiveAd: {
+                Titles: r.Titles.map(String),
+                Texts: r.Texts.map(String),
+                ...(r.Href ? { Href: String(r.Href) } : {}),
+                ...(r.PriceExtension ? { PriceExtension: r.PriceExtension } : {}),
+                ...(Array.isArray(r.AdExtensionIds) ? { AdExtensionIds: r.AdExtensionIds.map(Number) } : {}),
+                ...(Array.isArray(r.AdImageHashes) ? { AdImageHashes: r.AdImageHashes.map(String) } : {}),
+              },
+            });
+          } else {
+            const textAd = a.TextAd ?? {};
+            state.ads.push({ Id: id, AdGroupId: groupId, CampaignId: group.CampaignId, Type: "TEXT_AD", Status: "DRAFT", State: "OFF", TextAd: { Title: String(textAd.Title), ...(textAd.Title2 ? { Title2: String(textAd.Title2) } : {}), Text: String(textAd.Text), Href: String(textAd.Href), Mobile: "NO" } });
+          }
           return { Id: id };
         });
         return { result: { AddResults: results } };
@@ -321,6 +400,81 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
         return { result: { AddResults: results } };
       }
       return { errors: [err(17, `Unknown negativekeywords method ${method}`)] };
+    }
+
+    if (service === "adextensions") {
+      if (method === "get") {
+        return {
+          result: {
+            AdExtensions: state.callouts.map((c) => ({
+              Id: c.Id,
+              Type: c.Type,
+              Callout: c.Callout,
+              State: c.State,
+              Status: c.Status,
+            })),
+          },
+        };
+      }
+      if (method === "add") {
+        const adds = (p.AdExtensions as { Callout: { CalloutText: string } }[]) ?? [];
+        const results = adds.map((e) => {
+          const text = String(e.Callout?.CalloutText ?? "").trim();
+          if (!text) return { Errors: [err(17, "CalloutText is required")] };
+          // The real API errors on duplicates; discovery-by-text should prevent it.
+          if (state.callouts.some((x) => x.Callout.CalloutText === text)) {
+            return { Errors: [err(17, `Identical callout already exists: ${text}`)] };
+          }
+          const id = Math.max(0, ...state.callouts.map((x) => x.Id)) + 1;
+          state.callouts.push({ Id: id, Type: "CALLOUT", Callout: { CalloutText: text }, State: "ON", Status: "DRAFT" });
+          return { Id: id };
+        });
+        return { result: { AddResults: results } };
+      }
+      if (method === "delete") {
+        const ids = (p.SelectionCriteria?.Ids as number[]) ?? [];
+        const results = ids.map((id) => {
+          const i = state.callouts.findIndex((c) => c.Id === id);
+          if (i === -1) return { Errors: [err(270, `AdExtension ${id} not found`)] };
+          state.callouts.splice(i, 1);
+          return { Id: id };
+        });
+        return { result: { DeleteResults: results } };
+      }
+      return { errors: [err(17, `Unknown adextensions method ${method}`)] };
+    }
+
+    if (service === "adimages") {
+      if (method === "add") {
+        const adds = (p.AdImages as { ImageData: string; Name?: string }[]) ?? [];
+        const results = adds.map((img) => {
+          const name = String(img.Name ?? "image");
+          // Content-hash based (like the real API): identical bytes → same hash.
+          const existing = state.images.find((x) => x.Hash === hashOf(img.ImageData, name));
+          const hash = existing?.Hash ?? hashOf(img.ImageData, name);
+          if (!existing) state.images.push({ Hash: hash, Name: name });
+          return { AdImageHash: hash };
+        });
+        return { result: { AddResults: results } };
+      }
+      if (method === "delete") {
+        const ids = (p.SelectionCriteria?.Ids as string[]) ?? [];
+        const results = ids.map((hash) => {
+          const i = state.images.findIndex((x) => x.Hash === hash);
+          if (i === -1) return { Errors: [err(270, `AdImage ${hash} not found`)] };
+          state.images.splice(i, 1);
+          return { Id: hash };
+        });
+        return { result: { DeleteResults: results } };
+      }
+      return { errors: [err(17, `Unknown adimages method ${method}`)] };
+    }
+
+    if (service === "clients") {
+      if (method === "getGoals") {
+        return { result: { Goals: state.goals.map((g) => ({ Id: g.Id, Name: g.Name })) } };
+      }
+      return { errors: [err(17, `Unknown clients method ${method}`)] };
     }
 
     if (service === "reports") {

@@ -537,9 +537,30 @@ export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
   if (kwList) params.keywords = kwList;
   if (Array.isArray(i.params.negative_keywords)) params.negativeKeywords = i.params.negative_keywords.map(String);
   if (Array.isArray(i.params.region_ids)) params.regionIds = i.params.region_ids.map(Number);
+  // Phase E.2: responsive ad surface (headlines, callouts, price, UTM, images).
+  const titlesList = Array.isArray(i.params.titles) ? i.params.titles.map(String).filter(Boolean).slice(0, 7) : undefined;
+  if (titlesList?.length) params.titles = titlesList;
+  const calloutsList = Array.isArray(i.params.callouts) ? i.params.callouts.map(String).filter(Boolean).slice(0, 5) : undefined;
+  if (calloutsList?.length) params.callouts = calloutsList;
+  if (typeof i.params.price_rubles === "number" && i.params.price_rubles > 0) params.priceRubles = Math.round(i.params.price_rubles);
+  if (typeof i.params.price_old_rubles === "number" && i.params.price_old_rubles > 0) params.priceOldRubles = Math.round(i.params.price_old_rubles);
+  if (i.params.price_qualifier === "from" || i.params.price_qualifier === "up_to") params.priceQualifier = i.params.price_qualifier;
+  if (typeof i.params.tracking_params === "string" && i.params.tracking_params.trim()) params.trackingParams = i.params.tracking_params.trim().slice(0, 500);
+  const imagesList = Array.isArray(i.params.images)
+    ? (i.params.images as { url?: string; name?: string }[]).filter((x) => x && typeof x.url === "string" && /^https?:\/\//i.test(x.url)).slice(0, 5)
+    : undefined;
+  if (imagesList?.length) params.images = imagesList;
 
   const adGroupName = typeof params.adGroupName === "string" ? (params.adGroupName as string) : undefined;
-  const hasAd = Boolean(params.title && params.text && params.url);
+  const headlines = (titlesList?.length ? titlesList : typeof params.title === "string" ? [params.title] : []) as string[];
+  const hasAd = Boolean(headlines.length && params.text);
+  const priceRubles = typeof params.priceRubles === "number" ? params.priceRubles : undefined;
+  const priceLine =
+    priceRubles != null
+      ? `${i.params.price_qualifier === "from" ? "от " : i.params.price_qualifier === "up_to" ? "до " : ""}${fmtMoney(priceRubles)}${
+          typeof params.priceOldRubles === "number" ? ` (старая ${fmtMoney(params.priceOldRubles)})` : ""
+        }`
+      : undefined;
 
   return {
     result: {
@@ -549,7 +570,20 @@ export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
         { entity: "Кампания", name, before: "—", after: `Будет создана · бюджет ${fmtMoney(budget)}/день` },
         { entity: "Стратегия", name: strategyLabel, note: "Применится на провайдере ровно эта стратегия" },
         ...(adGroupName ? [{ entity: "Группа", name: adGroupName, after: "будет создана" }] : []),
-        ...(hasAd ? [{ entity: "Объявление", name: String(params.title), note: "текст + URL как в запросе" }] : []),
+        ...(hasAd
+          ? [
+              {
+                entity: "Объявление",
+                name: headlines[0],
+                after: `${headlines.length > 1 ? `${headlines.length} заголовка(ов)` : "1 заголовок"}${typeof params.text === "string" ? " + текст" : ""}${params.url ? " + URL" : ""}`,
+                note: headlines.length > 1 ? headlines.slice(1).map((t) => `«${t}»`).join(", ") : undefined,
+              },
+            ]
+          : []),
+        ...(calloutsList?.length ? [{ entity: "Уточнения", name: calloutsList.join(" · ") }] : []),
+        ...(priceLine ? [{ entity: "Цена", name: priceLine }] : []),
+        ...(typeof params.trackingParams === "string" ? [{ entity: "UTM-параметры", name: params.trackingParams, note: "добавятся ко всем ссылкам кампании" }] : []),
+        ...(imagesList?.length ? [{ entity: "Изображения", name: `${imagesList.length} шт.`, note: imagesList.map((x) => x.name ?? x.url).join(", ") }] : []),
         ...(kwList?.length ? [{ entity: "Ключевые фразы", name: `${kwList.length} шт.`, note: "будут созданы в группе" }] : []),
         ...(Array.isArray(params.negativeKeywords) && (params.negativeKeywords as string[]).length
           ? [{ entity: "Минус-фразы", name: (params.negativeKeywords as string[]).join(", ") }]

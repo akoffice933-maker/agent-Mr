@@ -46,6 +46,23 @@ export type WriteOp =
       keywords?: string[];
       negativeKeywords?: string[];
       regionIds?: number[];
+      /** Responsive ad headlines (Direct Titles), max 7 × 56 chars.
+       *  Legacy `title` is treated as the first headline. */
+      titles?: string[];
+      /** Callout extensions (Direct «уточнения»), max 5 × 25 chars. */
+      callouts?: string[];
+      /** Ad price, ₽ (Direct PriceExtension). */
+      priceRubles?: number;
+      /** Old (strikethrough) price, ₽. */
+      priceOldRubles?: number;
+      /** Price qualifier → Direct PriceQualifier FROM / UP_TO (default NONE). */
+      priceQualifier?: "from" | "up_to";
+      /** Campaign-level URL parameters / UTM tags (Direct TrackingParams),
+       *  added to every ad link, e.g. "utm_source=agentmr&utm_medium=cpc". */
+      trackingParams?: string;
+      /** Ad images (public URLs, jpg/png/gif, ≤5): fetched server-side and
+       *  uploaded to Direct (adimages) and attached to the ad. */
+      images?: { url: string; name?: string }[];
       /** stable id of the pending action — builds the provider-side correlation
        *  tag (agentmr:{org}:{actionId}) so a retried action ADOPTS the already
        *  created campaign instead of duplicating it (E.1 idempotency). */

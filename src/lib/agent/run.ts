@@ -598,6 +598,16 @@ async function planEffect(tool: string, params: Record<string, unknown>, pending
               keywords: Array.isArray(params.keywords) ? (params.keywords as string[]) : undefined,
               negativeKeywords: Array.isArray(params.negativeKeywords) ? (params.negativeKeywords as string[]) : undefined,
               regionIds: Array.isArray(params.regionIds) ? (params.regionIds as number[]) : undefined,
+              // Phase E.2: responsive ad surface
+              titles: Array.isArray(params.titles) ? (params.titles as string[]).filter(Boolean) : undefined,
+              callouts: Array.isArray(params.callouts) ? (params.callouts as string[]).filter(Boolean) : undefined,
+              priceRubles: typeof params.priceRubles === "number" && params.priceRubles > 0 ? params.priceRubles : undefined,
+              priceOldRubles: typeof params.priceOldRubles === "number" && params.priceOldRubles > 0 ? params.priceOldRubles : undefined,
+              priceQualifier: params.priceQualifier === "from" || params.priceQualifier === "up_to" ? params.priceQualifier : undefined,
+              trackingParams: typeof params.trackingParams === "string" && params.trackingParams.trim() ? params.trackingParams.trim() : undefined,
+              images: Array.isArray(params.images)
+                ? (params.images as { url: string; name?: string }[]).filter((i) => i && typeof i.url === "string" && /^https?:\/\//i.test(i.url)).slice(0, 5)
+                : undefined,
             },
           },
         ],

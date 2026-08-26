@@ -145,5 +145,100 @@ export function buildBiddingStrategy(
   }
 }
 
+// ─── Unified performance campaigns (RESPONSIVE_AD path) ─────────────────────
+//
+// UnifiedCampaign uses a DIFFERENT strategy vocabulary than TextCampaign
+// (no WB_MAXIMUM_CONVERSIONS / MANUAL_CPC / TARGET_CPA):
+//   maximum_clicks     → WB_MAXIMUM_CLICKS          (weekly budget)
+//   manual_cpc         → AVERAGE_CPC                (avg. click price)
+//   maximum_conversions→ WB_MAXIMUM_CONVERSION_RATE (requires a goal)
+//   target_cpa         → AVERAGE_CPA                (requires a goal)
+// Conversion strategies need a Metrika goal (GoalId). The builder looks one up
+// (clients.getGoals, best effort); without a goal we fall back to
+// WB_MAXIMUM_CLICKS and return a VISIBLE note — never a silent divergence
+// between the approved preview and what the provider creates.
+
+export interface UnifiedStrategyResult {
+  /** UnifiedCampaign.BiddingStrategy payload ({ Search, Network }). */
+  payload: { Search: Record<string, unknown>; Network: Record<string, unknown> };
+  /** Unified BiddingStrategyType actually used on Search. */
+  used: string;
+  /** human note when the strategy was adapted (e.g. no goal → fallback). */
+  note?: string;
+}
+
+export function buildUnifiedBiddingStrategy(
+  strategy: StrategyKey,
+  weeklyBudgetMicros: number,
+  maxCpcRubles?: number,
+  maxCpaRubles?: number,
+  goalId?: number | null
+): UnifiedStrategyResult {
+  const searchBase = { PlacementTypes: { SearchResults: "YES" } };
+  const network = { BiddingStrategyType: "SERVING_OFF" };
+  const fallback = (reason: string): UnifiedStrategyResult => ({
+    used: "WB_MAXIMUM_CLICKS",
+    note: `${reason} — применено «Максимум кликов» (еженедельный бюджет)`,
+    payload: {
+      Network: network,
+      Search: { ...searchBase, BiddingStrategyType: "WB_MAXIMUM_CLICKS", WbMaximumClicks: { WeeklySpendLimit: weeklyBudgetMicros } },
+    },
+  });
+
+  switch (strategy) {
+    case "manual_cpc":
+      return {
+        used: "AVERAGE_CPC",
+        payload: {
+          Network: network,
+          Search: {
+            ...searchBase,
+            BiddingStrategyType: "AVERAGE_CPC",
+            AverageCpc: { AverageCpc: rublesToMicros(maxCpcRubles ?? 10), WeeklySpendLimit: weeklyBudgetMicros },
+          },
+        },
+      };
+    case "maximum_conversions":
+      if (goalId) {
+        return {
+          used: "WB_MAXIMUM_CONVERSION_RATE",
+          payload: {
+            Network: network,
+            Search: {
+              ...searchBase,
+              BiddingStrategyType: "WB_MAXIMUM_CONVERSION_RATE",
+              WbMaximumConversionRate: { WeeklySpendLimit: weeklyBudgetMicros, GoalId: goalId },
+            },
+          },
+        };
+      }
+      return fallback("цель конверсии в аккаунте не найдена");
+    case "target_cpa":
+      if (goalId) {
+        return {
+          used: "AVERAGE_CPA",
+          payload: {
+            Network: network,
+            Search: {
+              ...searchBase,
+              BiddingStrategyType: "AVERAGE_CPA",
+              AverageCpa: { AverageCpa: rublesToMicros(maxCpaRubles ?? 500), GoalId: goalId, WeeklySpendLimit: weeklyBudgetMicros },
+            },
+          },
+        };
+      }
+      return fallback("цель конверсии в аккаунте не найдена");
+    case "maximum_clicks":
+    default:
+      return {
+        used: "WB_MAXIMUM_CLICKS",
+        payload: {
+          Network: network,
+          Search: { ...searchBase, BiddingStrategyType: "WB_MAXIMUM_CLICKS", WbMaximumClicks: { WeeklySpendLimit: weeklyBudgetMicros } },
+        },
+      };
+  }
+}
+
 // re-export for convenience in previews (weekly budget math in one place)
 export { dailyRublesToWeeklyMicros };

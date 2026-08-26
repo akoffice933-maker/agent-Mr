@@ -252,8 +252,11 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
           // agent's applyLocal step (run.ts) from the verified read-back — not
           // here — so exactly one row per provider campaign is created.
           if (op.url && !/^https?:\/\//i.test(op.url)) return fail("Direct: URL объявления должен начинаться с http:// или https://");
-          if ((op.title || op.text || op.url) && (!op.title || !op.text || !op.url)) {
-            return fail("Direct: для создания объявления нужны title, text и url");
+          // ResponsiveAd requires headlines + description; URL is optional.
+          if (op.titles?.length || op.title || op.text) {
+            if (!(op.titles?.length || op.title) || !op.text) {
+              return fail("Direct: для создания объявления нужны заголовок (title/titles) и текст (text)");
+            }
           }
           const orgId = currentTenant()?.orgId ?? 1;
           const corrName = op.correlationId ? correlationName(orgId, op.correlationId, op.name) : op.name;
@@ -270,6 +273,14 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
             keywords: op.keywords,
             negativeKeywords: op.negativeKeywords,
             regionIds: op.regionIds,
+            // Phase E.2: responsive ad surface (headlines, callouts, price, UTM, images)
+            titles: op.titles,
+            callouts: op.callouts,
+            priceRubles: op.priceRubles,
+            priceOldRubles: op.priceOldRubles,
+            priceQualifier: op.priceQualifier,
+            trackingParams: op.trackingParams,
+            images: op.images,
           });
           return {
             ok: built.ok,

@@ -191,6 +191,54 @@ export function parseIntent(raw: string): ParsedIntent {
       params.title = mTitle[1].trim();
       params.text = mText[1].trim();
       params.url = urlValue;
+    } else if (!mTitle && mText) {
+      // E.2: headlines come from «заголовки: …» — text/url are independent
+      // (ResponsiveAd allows an ad without a URL).
+      params.text = mText[1].trim();
+      if (urlValue) params.url = urlValue;
+    }
+    // Phase E.2: responsive ad surface — headlines, callouts, price, UTM, images.
+    // Formats: «заголовки: A, B, C» · «уточнения: X, Y» · «цена 990» / «цена от 990»
+    // · «старая цена 1990» · «utm: utm_source=agentmr&utm_medium=cpc»
+    // · «изображения: https://… [https://…]»
+    // List captures stop at the next known marker word / semicolon / end.
+    const NEXT_MARKER = "(?:текст|url|ссылка|адрес|уточнения|цена|старая|utm|параметры|изображения|изображение|картинки|картинка|фото|ключи|ключевые|минус|бюджет|группа|название)";
+    // NB: \b does NOT work for Cyrillic in JS (ASCII-only) — use a negative
+    // lookahead for a letter/digit instead of a word boundary.
+    const takeList = (label: string) =>
+      raw.match(new RegExp(`(?:${label})\\s*[:\\-]\\s*([\\s\\S]*?)(?=\\s+(?:${NEXT_MARKER})(?![а-яёa-z0-9])|[;\\n]|$)`, "i"))?.[1];
+    const mTitles = takeList("заголовки");
+    if (mTitles) {
+      const ts = mTitles.split(",").map((w) => w.replace(/[«»"']/g, "").trim()).filter(Boolean).slice(0, 7);
+      if (ts.length) {
+        params.titles = ts;
+        if (!mTitle) params.title = ts[0]; // keep the legacy field in sync for previews
+      }
+    }
+    const mCallouts = takeList("уточнения");
+    if (mCallouts) {
+      const cs = mCallouts.split(",").map((w) => w.trim()).filter(Boolean).slice(0, 5);
+      if (cs.length) params.callouts = cs;
+    }
+    const mOldPrice = raw.match(/старая цена\s+(\d[\d\s\u00a0]*)/i);
+    if (mOldPrice) params.priceOldRubles = Number(mOldPrice[1].replace(/[\s\u00a0]/g, ""));
+    const mPrice = raw.match(/цена\s+(от\s+|до\s+)?(\d[\d\s\u00a0]*)/i);
+    if (mPrice && mPrice.index != null) {
+      const before = raw.slice(Math.max(0, mPrice.index - 12), mPrice.index).toLowerCase();
+      if (!/старая\s*$/.test(before)) {
+        const price = Number(mPrice[2].replace(/[\s\u00a0]/g, ""));
+        if (price > 0) {
+          params.priceRubles = price;
+          if (mPrice[1]) params.priceQualifier = /от/i.test(mPrice[1]) ? "from" : "up_to";
+        }
+      }
+    }
+    const mUtm = takeList("utm|параметры url|url-параметры");
+    if (mUtm && mUtm.includes("=")) params.trackingParams = mUtm.trim().replace(/[,;]+$/, "");
+    const mImages = takeList("изображения|изображение|картинки|картинка|фото");
+    if (mImages) {
+      const urls = (mImages.match(/https?:\/\/\S+/g) ?? []).map((u) => u.replace(/[.,;]+$/, "")).slice(0, 5);
+      if (urls.length) params.images = urls.map((url) => ({ url }));
     }
     if (mKeywords) {
       const kws = mKeywords[1].split(",").map((w) => w.trim()).filter(Boolean).slice(0, 1000);

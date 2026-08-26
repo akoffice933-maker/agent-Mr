@@ -163,6 +163,44 @@ describe("create_campaign — full ad-tree spec (E2E runbook grammar)", () => {
     expect(i.params.keywords).toBeUndefined();
   });
 
+  it("E.2: парсит responsive-объявление — заголовки, уточнения, цена, UTM, изображение", () => {
+    const i = parseIntent(
+      "Создай кампанию в Яндекс Директ «Кухни», бюджет 500/день, " +
+        "заголовки: Кухни под заказ, Кухня мечты от 99 000 ₽, " +
+        "текст «Сделаем за 30 дней», url https://example.com, " +
+        "уточнения: Свой дизайн, Гарантия 5 лет, " +
+        "цена от 99000, старая цена 149000, " +
+        "utm: utm_source=agentmr&utm_medium=cpc, " +
+        "изображение: https://cdn.example.com/k.png"
+    );
+    expect(i.tool).toBe("create_campaign");
+    expect(i.params.titles).toEqual(["Кухни под заказ", "Кухня мечты от 99 000 ₽"]);
+    expect(i.params.title).toBe("Кухни под заказ");
+    expect(i.params.text).toBe("Сделаем за 30 дней");
+    expect(i.params.url).toBe("https://example.com");
+    expect(i.params.callouts).toEqual(["Свой дизайн", "Гарантия 5 лет"]);
+    expect(i.params.priceRubles).toBe(99000);
+    expect(i.params.priceQualifier).toBe("from");
+    expect(i.params.priceOldRubles).toBe(149000);
+    expect(i.params.trackingParams).toBe("utm_source=agentmr&utm_medium=cpc");
+    expect(i.params.images).toEqual([{ url: "https://cdn.example.com/k.png" }]);
+  });
+
+  it("E.2: «цена до» → up_to; без квалификатора — plain price", () => {
+    const i1 = parseIntent("Создай кампанию «X», бюджет 200/день, заголовок «T», текст «D», url https://e.com, цена до 500");
+    expect(i1.params.priceRubles).toBe(500);
+    expect(i1.params.priceQualifier).toBe("up_to");
+    const i2 = parseIntent("Создай кампанию «X», бюджет 200/день, заголовок «T», текст «D», url https://e.com, цена 1200");
+    expect(i2.params.priceRubles).toBe(1200);
+    expect(i2.params.priceQualifier).toBeUndefined();
+  });
+
+  it("E.2: «старая цена» не считается новой ценой", () => {
+    const i = parseIntent("Создай кампанию «X», бюджет 200/день, заголовок «T», текст «D», url https://e.com, старая цена 999");
+    expect(i.params.priceOldRubles).toBe(999);
+    expect(i.params.priceRubles).toBeUndefined();
+  });
+
   it("«минус-фразы» БЕЗ создания кампаний — прежний инструмент add_negative_keywords (регрессия)", () => {
     const i = parseIntent("Добавь минус-фразы «бесплатно», «работа» в кампанию «Поиск — Кухни»");
     expect(i.tool).toBe("add_negative_keywords");

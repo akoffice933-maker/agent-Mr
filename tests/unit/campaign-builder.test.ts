@@ -10,7 +10,7 @@ import { createSimulator } from "@/lib/adapters/yandex-direct/simulator";
 import { DirectApi } from "@/lib/adapters/yandex-direct/api";
 import { buildCampaignTree, type BuildParams } from "@/lib/adapters/yandex-direct/campaign-builder";
 import { correlationName, parseCorrelation } from "@/lib/adapters/yandex-direct/naming";
-import { resolveStrategy, STRATEGIES, buildBiddingStrategy } from "@/lib/adapters/yandex-direct/strategy";
+import { resolveStrategy, STRATEGIES, buildBiddingStrategy, buildUnifiedBiddingStrategy } from "@/lib/adapters/yandex-direct/strategy";
 import { rublesToMicros, microsToRubles, dailyRublesToWeeklyMicros } from "@/lib/money";
 
 function apiFor(sim: ReturnType<typeof createSimulator>) {
@@ -124,16 +124,20 @@ describe("campaign-builder: partial failure / saga state (E.1 P0-2)", () => {
 });
 
 describe("campaign-builder: deterministic strategy mapping (E.1 P0-6)", () => {
-  it("maximum_conversions produces WB_MAXIMUM_CONVERSIONS, not the hardcoded WB_MAXIMUM_CLICKS", async () => {
+  it("maximum_conversions uses the conversion strategy, not a hardcoded WB_MAXIMUM_CLICKS", async () => {
     const sim = createSimulator();
     const api = apiFor(sim);
     const corr = correlationName(1, 11, "Конверсии");
     const r = await buildCampaignTree(api, { ...baseParams, correlationName: corr, strategy: "maximum_conversions", keywords: [] });
     expect(r.ok).toBe(true);
     const addReq = sim.lastRequests.find((q) => q.service === "campaigns" && q.method === "add");
-    const bs = (addReq?.params as any)?.Campaigns?.[0]?.TextCampaign?.BiddingStrategy?.Search;
-    expect(bs?.BiddingStrategyType).toBe("WB_MAXIMUM_CONVERSIONS");
-    expect(bs?.WbMaximumConversions?.WeeklySpendLimit).toBe(dailyRublesToWeeklyMicros(1000));
+    // E.2: unified campaigns carry their own vocabulary — maximum_conversions
+    // becomes WB_MAXIMUM_CONVERSION_RATE (with the account goal), never the
+    // hardcoded WB_MAXIMUM_CLICKS.
+    const bs = (addReq?.params as any)?.Campaigns?.[0]?.UnifiedCampaign?.BiddingStrategy?.Search;
+    expect(bs?.BiddingStrategyType).toBe("WB_MAXIMUM_CONVERSION_RATE");
+    expect(bs?.WbMaximumConversionRate?.WeeklySpendLimit).toBe(dailyRublesToWeeklyMicros(1000));
+    expect(Number.isFinite(bs?.WbMaximumConversionRate?.GoalId)).toBe(true);
   });
 
   it("resolveStrategy is total and never escalates on garbage", () => {
@@ -179,5 +183,188 @@ describe("correlation naming (E.1 P0-1)", () => {
     expect(long.length).toBeLessThanOrEqual(255);
     expect(parseCorrelation(long)).toEqual({ orgId: 1, actionId: 9 });
     expect(parseCorrelation("обычная кампания без тега")).toBeNull();
+  });
+});
+
+describe("campaign-builder: responsive ads (E.2)", () => {
+  const fakeFetch = async (url: string) => ({
+    base64: Buffer.from(`fake-image-bytes-${url}`).toString("base64"),
+    contentType: "image/png",
+  });
+
+  it("creates a UNIFIED campaign + RESPONSIVE ad: headlines, callouts, price, UTM, images", async () => {
+    const sim = createSimulator();
+    const api = apiFor(sim);
+    const corr = correlationName(1, 200, "Кухни премиум");
+    const p: BuildParams = {
+      ...baseParams,
+      correlationName: corr,
+      titles: ["Кухни под заказ", "Кухня мечты от 99 000 ₽", "Сделаем за 30 дней"],
+      callouts: ["Свой дизайн", "Гарантия 5 лет"],
+      priceRubles: 99000,
+      priceOldRubles: 149000,
+      priceQualifier: "from",
+      trackingParams: "utm_source=agentmr&utm_medium=cpc",
+      images: [{ url: "https://cdn.example.com/kitchen.png", name: "kitchen" }],
+      fetchImage: fakeFetch,
+    };
+    const r = await buildCampaignTree(api, p);
+    expect(r.ok).toBe(true);
+    expect(r.verified).toBe(true);
+
+    const campAdd = sim.lastRequests.find((x) => x.service === "campaigns" && x.method === "add")!;
+    const camp = (campAdd.params.Campaigns as Record<string, any>[])[0];
+    expect(camp.UnifiedCampaign).toBeTruthy();
+    expect(camp.TextCampaign).toBeUndefined();
+    expect(camp.UnifiedCampaign.BiddingStrategy.Search.BiddingStrategyType).toBe("WB_MAXIMUM_CLICKS");
+    expect(camp.UnifiedCampaign.TrackingParams).toBe("utm_source=agentmr&utm_medium=cpc");
+
+    const grpAdd = sim.lastRequests.find((x) => x.service === "adgroups" && x.method === "add")!;
+    expect((grpAdd.params.AdGroups as Record<string, any>[])[0].UnifiedAdGroup).toEqual({ OfferRetargeting: "NO" });
+
+    const extAdd = sim.lastRequests.find((x) => x.service === "adextensions" && x.method === "add")!;
+    expect((extAdd.params.AdExtensions as Record<string, any>[]).map((e) => e.Callout.CalloutText)).toEqual(["Свой дизайн", "Гарантия 5 лет"]);
+
+    const imgAdd = sim.lastRequests.find((x) => x.service === "adimages" && x.method === "add")!;
+    const imgs = imgAdd.params.AdImages as Record<string, any>[];
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].Name).toBe("kitchen");
+    expect(imgs[0].Type).toBe("AUTO");
+
+    const adAdd = sim.lastRequests.find((x) => x.service === "ads" && x.method === "add")!;
+    const ad = (adAdd.params.Ads as Record<string, any>[])[0];
+    expect(ad.ResponsiveAd.Titles).toEqual(["Кухни под заказ", "Кухня мечты от 99 000 ₽", "Сделаем за 30 дней"]);
+    expect(ad.ResponsiveAd.Texts).toEqual(["Текст объявления"]);
+    expect(ad.ResponsiveAd.Href).toBe("https://example.com");
+    expect(ad.ResponsiveAd.PriceExtension).toMatchObject({
+      Price: 99000 * 1_000_000,
+      OldPrice: 149000 * 1_000_000,
+      PriceQualifier: "FROM",
+      PriceCurrency: "RUB",
+    });
+    expect(ad.ResponsiveAd.AdExtensionIds).toHaveLength(2);
+    expect(ad.ResponsiveAd.AdImageHashes).toHaveLength(1);
+    expect(sim.state.ads[0].Type).toBe("RESPONSIVE_AD");
+    expect(r.detail).toContain("уточнений 2");
+    expect(r.detail).toContain("UTM");
+  });
+
+  it("retry adopts callouts + ad; image re-upload is hash-stable (no duplicates)", async () => {
+    const sim = createSimulator();
+    const api = apiFor(sim);
+    const corr = correlationName(1, 201, "Идемпотентность E.2");
+    const p: BuildParams = {
+      ...baseParams,
+      correlationName: corr,
+      titles: ["Первый", "Второй"],
+      callouts: ["Гарантия"],
+      trackingParams: "utm_source=agentmr",
+      images: [{ url: "https://cdn.example.com/a.png" }],
+      fetchImage: fakeFetch,
+    };
+    const r1 = await buildCampaignTree(api, p);
+    expect(r1.ok).toBe(true);
+    const r2 = await buildCampaignTree(api, p);
+    expect(r2.ok).toBe(true);
+    expect(r2.state.campaign?.adopted).toBe(true);
+    expect(r2.state.callouts.every((c) => c.adopted)).toBe(true);
+    expect(r2.state.ads.every((a) => a.adopted)).toBe(true);
+    expect(sim.state.callouts).toHaveLength(1);
+    expect(sim.state.ads).toHaveLength(1);
+    expect(sim.state.images).toHaveLength(1);
+    expect(sim.lastRequests.filter((x) => x.service === "adextensions" && x.method === "add")).toHaveLength(1);
+    expect(r2.detail).toContain("идемпотентный повтор");
+  });
+
+  it("maximum_conversions uses WB_MAXIMUM_CONVERSION_RATE with the account goal", async () => {
+    const sim = createSimulator({ goals: [{ Id: 777, Name: "Заказ" }] });
+    const api = apiFor(sim);
+    const r = await buildCampaignTree(api, {
+      ...baseParams,
+      correlationName: correlationName(1, 300, "Конверсии"),
+      strategy: "maximum_conversions",
+    });
+    expect(r.ok).toBe(true);
+    const campAdd = sim.lastRequests.find((x) => x.service === "campaigns" && x.method === "add")!;
+    const search = (campAdd.params.Campaigns as Record<string, any>[])[0].UnifiedCampaign.BiddingStrategy.Search;
+    expect(search.BiddingStrategyType).toBe("WB_MAXIMUM_CONVERSION_RATE");
+    expect(search.WbMaximumConversionRate.GoalId).toBe(777);
+    expect(r.state.strategyNote).toBeUndefined();
+  });
+
+  it("conversion strategy without a goal → WB_MAXIMUM_CLICKS + VISIBLE note", async () => {
+    const sim = createSimulator({ goals: [] });
+    const api = apiFor(sim);
+    const r = await buildCampaignTree(api, {
+      ...baseParams,
+      correlationName: correlationName(1, 301, "Без цели"),
+      strategy: "target_cpa",
+      maxCpaRubles: 500,
+    });
+    expect(r.ok).toBe(true);
+    const campAdd = sim.lastRequests.find((x) => x.service === "campaigns" && x.method === "add")!;
+    const search = (campAdd.params.Campaigns as Record<string, any>[])[0].UnifiedCampaign.BiddingStrategy.Search;
+    expect(search.BiddingStrategyType).toBe("WB_MAXIMUM_CLICKS");
+    expect(r.state.strategyNote).toBeTruthy();
+    expect(r.detail).toContain("Максимум кликов");
+  });
+
+  it("adopts a legacy TextCampaign and creates a TextAd (Title/Title2), not ResponsiveAd", async () => {
+    const corr = correlationName(1, 400, "Легаси");
+    const sim = createSimulator({
+      campaigns: [
+        { Id: 55, Name: corr, State: "ON", DailyBudget: 1000, Type: "TEXT_CAMPAIGN", TextCampaign: { BiddingStrategy: {} } },
+      ],
+    });
+    const api = apiFor(sim);
+    const r = await buildCampaignTree(api, {
+      ...baseParams,
+      correlationName: corr,
+      titles: ["Первый", "Второй"],
+      callouts: ["Гарантия"],
+    });
+    expect(r.ok).toBe(true);
+    expect(r.state.campaign?.adopted).toBe(true);
+    expect(r.state.campaign?.unified).toBe(false);
+    const adAdd = sim.lastRequests.find((x) => x.service === "ads" && x.method === "add")!;
+    const ad = (adAdd.params.Ads as Record<string, any>[])[0];
+    expect(ad.ResponsiveAd).toBeUndefined();
+    expect(ad.TextAd).toMatchObject({ Title: "Первый", Title2: "Второй" });
+    expect(ad.TextAd.AdExtensionIds).toHaveLength(1);
+  });
+
+  it("bad image content-type fails at the images step with saga state", async () => {
+    const sim = createSimulator();
+    const api = apiFor(sim);
+    const r = await buildCampaignTree(api, {
+      ...baseParams,
+      correlationName: correlationName(1, 401, "Плохое фото"),
+      images: [{ url: "https://cdn.example.com/file.exe" }],
+      fetchImage: async () => ({ base64: Buffer.from("x").toString("base64"), contentType: "application/x-msdownload" }),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.state.failedAt).toBe("images");
+    expect(r.error).toContain("jpg/png/gif");
+    // campaign + group already exist at the provider — saga state reports them
+    expect(r.state.createdResources.map((x) => x.kind)).toEqual(["campaign", "adgroup"]);
+  });
+});
+
+describe("buildUnifiedBiddingStrategy (E.2)", () => {
+  it("maps all four strategies to unified types; goal-less conversion falls back with a note", () => {
+    const weekly = 7 * 1000 * 1_000_000;
+    expect(buildUnifiedBiddingStrategy("maximum_clicks", weekly).used).toBe("WB_MAXIMUM_CLICKS");
+    const cpc = buildUnifiedBiddingStrategy("manual_cpc", weekly, 25);
+    expect(cpc.used).toBe("AVERAGE_CPC");
+    expect(cpc.payload.Search.AverageCpc).toEqual({ AverageCpc: 25 * 1_000_000, WeeklySpendLimit: weekly });
+    expect(buildUnifiedBiddingStrategy("maximum_conversions", weekly, undefined, undefined, 9).used).toBe("WB_MAXIMUM_CONVERSION_RATE");
+    const cpa = buildUnifiedBiddingStrategy("target_cpa", weekly, undefined, 400, 9);
+    expect(cpa.used).toBe("AVERAGE_CPA");
+    expect(cpa.payload.Search.AverageCpa).toMatchObject({ AverageCpa: 400 * 1_000_000, GoalId: 9 });
+    const fb = buildUnifiedBiddingStrategy("target_cpa", weekly, undefined, 400, null);
+    expect(fb.used).toBe("WB_MAXIMUM_CLICKS");
+    expect(fb.note).toBeTruthy();
+    // network is always off by default
+    expect(cpc.payload.Network).toEqual({ BiddingStrategyType: "SERVING_OFF" });
   });
 });
