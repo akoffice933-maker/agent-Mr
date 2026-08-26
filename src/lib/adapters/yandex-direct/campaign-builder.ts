@@ -50,7 +50,7 @@ export type BuildStep = "campaign" | "adgroup" | "ads" | "keywords" | "verify";
 export interface BuildState {
   campaign: { id: number; name: string; adopted: boolean } | null;
   adGroup: { id: number; name: string; adopted: boolean } | null;
-  ads: { id: number; adopted: boolean }[];
+  ads: { id: number; title?: string; adopted: boolean }[];
   keywords: { id: number; text: string; adopted: boolean }[];
   failedAt: BuildStep | null;
   /** flat list of everything that exists at the provider after this run */
@@ -109,9 +109,12 @@ export async function buildCampaignTree(api: DirectApi, p: BuildParams): Promise
 
   try {
     // ── 1. Campaign (discover by correlation name, adopt if present) ───────
+    // ALL states: a freshly created campaign is IN_PREPARATION / UNDER
+    // MODERATION, not ON/SUSPENDED — a state filter here would miss it and
+    // the retry would duplicate the campaign.
     const existingCamps = (await api.call("campaigns", "get", {
-      SelectionCriteria: { States: ["ON", "SUSPENDED"] },
-      FieldNames: ["Id", "Name", "State", "Budget"],
+      SelectionCriteria: {},
+      FieldNames: ["Id", "Name", "State", "DailyBudget"],
       Page: { Limit: 4000, Offset: 0 },
     })) as { Campaigns?: Record<string, unknown>[] };
     const adopted = (existingCamps.Campaigns ?? []).find((c) => String(c.Name) === p.correlationName);
@@ -159,7 +162,9 @@ export async function buildCampaignTree(api: DirectApi, p: BuildParams): Promise
             {
               Name: groupName,
               CampaignId: campaignId,
-              RegionIds: p.regionIds?.length ? p.regionIds : [0],
+              // RegionIds is REQUIRED by the real API: 0 is invalid (5120),
+              // omission is invalid (8000). Default: [1] = all of Russia.
+              RegionIds: p.regionIds?.length ? p.regionIds : [1],
               ...(p.negativeKeywords?.length ? { NegativeKeywords: { Items: p.negativeKeywords } } : {}),
             },
           ],
@@ -180,11 +185,12 @@ export async function buildCampaignTree(api: DirectApi, p: BuildParams): Promise
         step = "ads";
         const existingAds = (await api.call("ads", "get", {
           SelectionCriteria: { AdGroupIds: [adGroupId] },
+          FieldNames: ["Id", "CampaignId", "AdGroupId", "Type"],
           TextAdFieldNames: ["Title"],
         })) as { Ads?: Record<string, unknown>[] };
         const adoptedAd = (existingAds.Ads ?? []).find((a) => String((a.TextAd as Record<string, unknown>)?.Title) === p.title);
         if (adoptedAd) {
-          state.ads.push({ id: Number(adoptedAd.Id), adopted: true });
+          state.ads.push({ id: Number(adoptedAd.Id), title: p.title, adopted: true });
         } else {
           const resp = (await api.call("ads", "add", {
             Ads: [{ AdGroupId: adGroupId, TextAd: { Title: p.title, Text: p.text, Mobile: "NO", Href: p.url } }],
@@ -193,7 +199,7 @@ export async function buildCampaignTree(api: DirectApi, p: BuildParams): Promise
           const errs = itemErrors(resp);
           const id = resp.AddResults?.[0]?.Id;
           if (errs.length || !id) return fail(`Direct: создание объявления: ${fmtErr(errs) || "ID объявления не возвращён"}`);
-          state.ads.push({ id: Number(id), adopted: false });
+          state.ads.push({ id: Number(id), title: p.title, adopted: false });
         }
       }
 
@@ -249,14 +255,21 @@ export async function buildCampaignTree(api: DirectApi, p: BuildParams): Promise
       adGroupVerified = groups.length === 1 && Number(groups[0].CampaignId) === campaignId;
       if (!adGroupVerified) return fail("Direct: read-back группы не совпал");
       if (state.ads.length) {
+        // Ad Ids are 64-bit and overflow JS Number precision — never use them
+        // in SelectionCriteria.Ids. Verify by AdGroupIds + Title instead
+        // (both safe < 2^53 and exactly what the verification means).
         adReadback = await api.call("ads", "get", {
-          SelectionCriteria: { Ids: state.ads.map((a) => a.id) },
+          SelectionCriteria: { AdGroupIds: [state.adGroup.id] },
           FieldNames: ["Id", "CampaignId", "AdGroupId", "Type", "Status", "State"],
           TextAdFieldNames: ["Title", "Text", "Href"],
         });
         const ads = (adReadback as { Ads?: Record<string, unknown>[] }).Ads ?? [];
-        if (ads.length !== state.ads.length || !ads.every((a) => Number(a.CampaignId) === campaignId && Number(a.AdGroupId) === state.adGroup!.id)) {
-          return fail("Direct: read-back объявления не совпал");
+        const wanted = new Set(state.ads.map((a) => a.title).filter(Boolean));
+        const matched = ads.filter(
+          (a) => Number(a.AdGroupId) === state.adGroup!.id && (wanted.size === 0 || wanted.has(String((a.TextAd as Record<string, unknown>)?.Title)))
+        );
+        if (matched.length !== state.ads.length || !matched.every((a) => Number(a.CampaignId) === campaignId)) {
+          return fail(`Direct: read-back объявления не совпал (в группе ${state.adGroup.id} найдено ${matched.length} из ${state.ads.length})`);
         }
       }
       if (state.keywords.length) {

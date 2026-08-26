@@ -5,7 +5,7 @@
 // response → read-back → VERIFIED / FAILED → retry — against a faithful
 // provider contract, without a real account or real money. The simulator
 // implements the same {method, params} → {result, errors} contract and the
-// same state semantics as the real API (State ON/SUSPENDED, Budget, Bid,
+// same state semantics as the real API (State ON/SUSPENDED, DailyBudget, Bid,
 // per-item ActionResult errors).
 
 import type { YandexApiError, YandexResponse, YandexTransport } from "./api";
@@ -14,7 +14,7 @@ export interface SimCampaign {
   Id: number;
   Name: string;
   State: "ON" | "SUSPENDED";
-  Budget: number;
+  DailyBudget: number;
   Type: "TEXT_CAMPAIGN" | "SMART_CAMPAIGN";
 }
 
@@ -147,7 +147,7 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
         const results = updates.map((u) => {
           const c = state.campaigns.find((x) => x.Id === u.Id);
           if (!c) return { Errors: [err(270, `Campaign ${u.Id} not found`)] };
-          if (u.Budget != null) c.Budget = u.Budget;
+          if (u.DailyBudget != null) c.DailyBudget = u.DailyBudget;
           if (u.Name != null) c.Name = u.Name;
           return { Id: c.Id };
         });
@@ -161,7 +161,7 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
           const weekly =
             Number(bs.WbMaximumClicks?.WeeklySpendLimit ?? bs.WbMaximumConversions?.WeeklySpendLimit ?? 0) / 1_000_000;
           const budget = weekly > 0 ? weekly / 7 : 0;
-          state.campaigns.push({ Id: id, Name: String(c.Name), State: "ON", Budget: budget, Type: "TEXT_CAMPAIGN" });
+          state.campaigns.push({ Id: id, Name: String(c.Name), State: "ON", DailyBudget: budget, Type: "TEXT_CAMPAIGN" });
           return { Id: id };
         });
         return { result: { AddResults: results } };
@@ -342,7 +342,7 @@ export function createSimulator(initial?: Partial<SimState>): Simulator {
                 CampaignName: c.Name,
                 Impressions: active ? 1000 + c.Id * 7 : 0,
                 Clicks: active ? 50 + c.Id * 3 : 0,
-                Cost: active ? c.Budget / 2 : 0,
+                Cost: active ? c.DailyBudget / 2 : 0,
                 Conversions: active ? 3 + (c.Id % 5) : 0,
               };
               rows.push(Object.fromEntries(fields.map((f) => [f, row[f] ?? null])));
@@ -391,7 +391,7 @@ export function seedSimulatorFrom(campaigns: { id: number; name: string; status:
     Id: c.id,
     Name: c.name,
     State: c.status === "active" ? "ON" : "SUSPENDED",
-    Budget: c.budgetDaily,
+    DailyBudget: c.budgetDaily,
     Type: "TEXT_CAMPAIGN" as const,
   }));
   sim.state.adGroups = [];

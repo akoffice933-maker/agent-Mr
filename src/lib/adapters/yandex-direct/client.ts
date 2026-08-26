@@ -172,7 +172,7 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
     const extIds = local.map((c) => Number(c.externalId));
     const res = (await api.call("campaigns", "get", {
       SelectionCriteria: { Ids: extIds },
-      FieldNames: ["Id", "State", "Name", "Budget"],
+      FieldNames: ["Id", "State", "Name", "DailyBudget"],
     })) as { Campaigns?: Record<string, unknown>[] };
     return res.Campaigns ?? [];
   }
@@ -289,15 +289,15 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
           const local = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
           if (!local?.externalId) return fail("Direct: у кампании нет externalId — нечего удалять на провайдере");
           const extId = Number(local.externalId);
+          // Delete by CampaignIds selection, not by exact Ids: ad ids are
+          // 64-bit and overflow JS Number precision, so Ids:[rounded] would
+          // match nothing.
           const ads = (await api.call("ads", "get", { SelectionCriteria: { CampaignIds: [extId] }, FieldNames: ["Id"] })) as { Ads?: Record<string, unknown>[] };
-          const adIds = (ads.Ads ?? []).map((a) => Number(a.Id)).filter(Number.isFinite);
-          if (adIds.length) await api.call("ads", "delete", { SelectionCriteria: { Ids: adIds } });
+          if ((ads.Ads ?? []).length) await api.call("ads", "delete", { SelectionCriteria: { CampaignIds: [extId] } });
           const kws = (await api.call("keywords", "get", { SelectionCriteria: { CampaignIds: [extId] }, FieldNames: ["Id"] })) as { Keywords?: Record<string, unknown>[] };
-          const kwIds = (kws.Keywords ?? []).map((k) => Number(k.Id)).filter(Number.isFinite);
-          if (kwIds.length) await api.call("keywords", "delete", { SelectionCriteria: { Ids: kwIds } });
+          if ((kws.Keywords ?? []).length) await api.call("keywords", "delete", { SelectionCriteria: { CampaignIds: [extId] } });
           const groups = (await api.call("adgroups", "get", { SelectionCriteria: { CampaignIds: [extId] }, FieldNames: ["Id"] })) as { AdGroups?: Record<string, unknown>[] };
-          const groupIds = (groups.AdGroups ?? []).map((g) => Number(g.Id)).filter(Number.isFinite);
-          if (groupIds.length) await api.call("adgroups", "delete", { SelectionCriteria: { Ids: groupIds } });
+          if ((groups.AdGroups ?? []).length) await api.call("adgroups", "delete", { SelectionCriteria: { CampaignIds: [extId] } });
           const delResp = await api.call("campaigns", "delete", { SelectionCriteria: { Ids: [extId] } });
           const back = (await api.call("campaigns", "get", { SelectionCriteria: { Ids: [extId] }, FieldNames: ["Id"] })) as { Campaigns?: Record<string, unknown>[] };
           const gone = (back.Campaigns ?? []).length === 0;
@@ -305,8 +305,8 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
             ok: true,
             verified: gone,
             providerResponse: delResp,
-            readback: { campaign: back.Campaigns ?? [], removed: { ads: adIds.length, keywords: kwIds.length, adGroups: groupIds.length, campaign: gone } },
-            detail: gone ? `Direct: кампания ${extId} и её дерево (объявлений: ${adIds.length}, ключей: ${kwIds.length}, групп: ${groupIds.length}) удалены — read-back пуст` : "Direct: read-back: кампания всё ещё существует",
+            readback: { campaign: back.Campaigns ?? [], removed: { ads: (ads.Ads ?? []).length, keywords: (kws.Keywords ?? []).length, adGroups: (groups.AdGroups ?? []).length, campaign: gone } },
+            detail: gone ? `Direct: кампания ${extId} и её дерево (объявлений: ${(ads.Ads ?? []).length}, ключей: ${(kws.Keywords ?? []).length}, групп: ${(groups.AdGroups ?? []).length}) удалены — read-back пуст` : "Direct: read-back: кампания всё ещё существует",
           };
         }
         case "negative_keywords": {

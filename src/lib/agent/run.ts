@@ -347,7 +347,10 @@ export async function resolvePending(
   const pending = (
     await db.select().from(pendingActions).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org)))
   )[0];
-  if (!pending || pending.status !== "pending") {
+  // A failed action can be re-approved (the execution is idempotent by
+  // correlation name: the builder adopts already-created resources, so a
+  // retry RESUMES instead of duplicating — see campaign-builder.ts).
+  if (!pending || (pending.status !== "pending" && pending.status !== "failed")) {
     // 404-equivalent: do not leak that another org's action exists.
     return null;
   }

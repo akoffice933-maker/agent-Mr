@@ -7,7 +7,7 @@
 //   E7  retry on transient failures, no retry on permanent failures
 //
 // The simulator implements the same {method, params} → {result, errors}
-// provider contract as the real Direct API v5 (State ON/SUSPENDED, Budget,
+// provider contract as the real Direct API v5 (State ON/SUSPENDED, DailyBudget,
 // per-item ActionResult errors), so the read-back verification (E4) and
 // retry (E7) semantics are exercised against a faithful provider contract.
 //
@@ -31,8 +31,8 @@ const ctx = { orgId: 1, userId: null, role: "admin" };
 // mutable objects between sims — the simulator mutates them on writes).
 function freshSimCampaigns(): SimCampaign[] {
   return [
-    { Id: 100, Name: "Sim Camp A", State: "ON", Budget: 1000, Type: "TEXT_CAMPAIGN" },
-    { Id: 200, Name: "Sim Camp B", State: "ON", Budget: 2000, Type: "TEXT_CAMPAIGN" },
+    { Id: 100, Name: "Sim Camp A", State: "ON", DailyBudget: 1000, Type: "TEXT_CAMPAIGN" },
+    { Id: 200, Name: "Sim Camp B", State: "ON", DailyBudget: 2000, Type: "TEXT_CAMPAIGN" },
   ];
 }
 
@@ -145,7 +145,7 @@ describe("Phase E: execution pipeline (write → read-back → verified)", () =>
 
   it("E4: read-back mismatch (provider rejected a campaign) → NOT verified, state unchanged", async () => {
     await withTenant(ctx, async () => {
-      const sim = createSimulator({ campaigns: [{ Id: 100, Name: "Sim Camp A", State: "ON", Budget: 1000, Type: "TEXT_CAMPAIGN" }] });
+      const sim = createSimulator({ campaigns: [{ Id: 100, Name: "Sim Camp A", State: "ON", DailyBudget: 1000, Type: "TEXT_CAMPAIGN" }] });
       const client = clientWith(sim);
       // The local mirror has localB (externalId 200), but the simulator has no campaign 200.
       // The provider returns a per-item error (270 not found) → read-back mismatch → NOT verified.
