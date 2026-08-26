@@ -138,16 +138,19 @@ export function parseIntent(raw: string): ParsedIntent {
     return { ...base, tool: "promote_low_view_listings", platforms: ["avito"], params: { threshold } };
   }
 
-  // 4b. Pause/resume a SPECIFIC campaign by its quoted name (from the original text, case preserved)
-  const rawQuoted: string[] = [];
+  // 4b. Pause/resume a SPECIFIC campaign by its quoted name (from the original text,
+  // case preserved). Skipped for create requests: their spec QUOTES names (campaign,
+  // ad text) and headline words like «Запуск кампаний…» must not be read as a
+  // status command (E.2: the headline text must never steal the intent).
   {
+    const rawQuoted: string[] = [];
     const re = /[«"„']([^»"“']{2,60})[»"“']/g;
     let qm: RegExpExecArray | null;
     while ((qm = re.exec(raw)) !== null) rawQuoted.push(qm[1].trim());
-  }
-  if (rawQuoted.length > 0 && /(пауз|запуск|запусти|включи|выключи|стопни|останов)/.test(norm)) {
-    const status = /(запуск|запусти|включ)/.test(norm) ? "active" : "paused";
-    return { ...base, tool: "set_campaign_status", params: { name: rawQuoted[0], status } };
+    if (!isCreateRequest && rawQuoted.length > 0 && /(пауз|запуск|запусти|включи|выключи|стопни|останов)/.test(norm)) {
+      const status = /(запуск|запусти|включ)/.test(norm) ? "active" : "paused";
+      return { ...base, tool: "set_campaign_status", params: { name: rawQuoted[0], status } };
+    }
   }
 
   // 5. Pause low-CTR campaigns
@@ -301,6 +304,36 @@ export function parseIntent(raw: string): ParsedIntent {
 
 // ─── LLM-backed intent resolution (ТЗ этап 1) ────────────────────────────────
 
+/**
+ * Deterministic spec wins (Phase E.2): when the user wrote the spec with explicit
+ * markers («заголовки:», «уточнения:», «цена», «utm:», «изображение:»), the rule
+ * parser extracts it exactly — small LLMs tend to drop such fields from tool
+ * calls. Explicit marker values override LLM paraphrases; missing fields are
+ * filled from the rules.
+ */
+export function mergeRuleSpecIntoLlmParams(params: Record<string, unknown>, text: string): Record<string, unknown> {
+  const rules = parseIntent(text);
+  if (rules.tool !== "create_campaign") return params;
+  const rp = rules.params as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...params };
+  if (Array.isArray(rp.titles) && rp.titles.length) {
+    out.titles = rp.titles;
+    if (!out.title) out.title = rp.titles[0];
+  }
+  if (!out.title && typeof rp.title === "string") out.title = rp.title;
+  if (!out.text && typeof rp.text === "string") out.text = rp.text;
+  if (!out.url && typeof rp.url === "string") out.url = rp.url;
+  if (Array.isArray(rp.callouts) && rp.callouts.length) out.callouts = rp.callouts;
+  if (typeof rp.priceRubles === "number") out.priceRubles = rp.priceRubles;
+  if (typeof rp.priceOldRubles === "number") out.priceOldRubles = rp.priceOldRubles;
+  if (rp.priceQualifier === "from" || rp.priceQualifier === "up_to") out.priceQualifier = rp.priceQualifier;
+  if (typeof rp.trackingParams === "string") out.trackingParams = rp.trackingParams;
+  if (Array.isArray(rp.images) && rp.images.length) out.images = rp.images;
+  if (!out.keywords && Array.isArray(rp.keywords) && rp.keywords.length) out.keywords = rp.keywords;
+  if (!out.negativeKeywords && Array.isArray(rp.negativeKeywords) && rp.negativeKeywords.length) out.negativeKeywords = rp.negativeKeywords;
+  return out;
+}
+
 export interface ResolvedIntent {
   intent: ParsedIntent;
   engine: "llm" | "rules";
@@ -385,6 +418,16 @@ async function llmResolveIntent(text: string, ctx: SessionContext): Promise<Pars
       if (Array.isArray(args.keywords)) params.keywords = args.keywords.map(String).slice(0, 1000);
       if (Array.isArray(args.negative_keywords)) params.negativeKeywords = args.negative_keywords.map(String).slice(0, 100);
       if (Array.isArray(args.region_ids)) params.regionIds = args.region_ids.map(Number);
+      // Phase E.2: responsive ad surface
+      if (Array.isArray(args.titles) && args.titles.length) params.titles = args.titles.map(String).filter(Boolean).slice(0, 7);
+      if (Array.isArray(args.callouts) && args.callouts.length) params.callouts = args.callouts.map(String).filter(Boolean).slice(0, 5);
+      if (typeof args.price_rubles === "number" && args.price_rubles > 0) params.priceRubles = Math.round(args.price_rubles);
+      if (typeof args.price_old_rubles === "number" && args.price_old_rubles > 0) params.priceOldRubles = Math.round(args.price_old_rubles);
+      if (args.price_qualifier === "from" || args.price_qualifier === "up_to") params.priceQualifier = args.price_qualifier;
+      if (typeof args.tracking_params === "string" && args.tracking_params.trim()) params.trackingParams = args.tracking_params.trim().slice(0, 500);
+      if (Array.isArray(args.images) && args.images.length)
+        params.images = (args.images as { url?: string; name?: string }[])
+          .filter((x) => x && typeof x.url === "string" && /^https?:\/\//i.test(x.url)).slice(0, 5);
       break;
     case "list_campaigns":
       params.status = ["all", "active", "paused"].includes(args.status as string) ? (args.status as string) : "all";
@@ -396,7 +439,7 @@ async function llmResolveIntent(text: string, ctx: SessionContext): Promise<Pars
       break;
   }
 
-  return { tool, platforms, period, params };
+  return { tool, platforms, period, params: tool === "create_campaign" ? mergeRuleSpecIntoLlmParams(params, text) : params };
 }
 
 /**
@@ -407,6 +450,16 @@ export async function resolveIntent(text: string, ctx: SessionContext): Promise<
   if (isLlmConfigured()) {
     try {
       const intent = await llmResolveIntent(text, ctx);
+      // Misfire guard (E.2): an explicit create-campaign spec in the user's text
+      // is deterministic ground truth. Small LLMs occasionally read a headline
+      // word (e.g. «Запуск кампаний…») as another tool — the rule parser wins.
+      if (intent && intent.tool !== "create_campaign") {
+        const rules = parseIntent(text);
+        if (rules.tool === "create_campaign") {
+          console.warn(`[router] LLM picked "${intent.tool}" but the text is an explicit create_campaign spec — using rules`);
+          return { intent: rules, engine: "rules", llmError: `llm misfire (${intent.tool}) on explicit create spec` };
+        }
+      }
       if (intent) return { intent, engine: "llm", model: llmModel() };
     } catch (e) {
       const msg = (e as Error).message;

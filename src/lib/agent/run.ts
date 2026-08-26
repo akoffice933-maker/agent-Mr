@@ -14,7 +14,7 @@ import {
   recommendations,
 } from "@/db/schema";
 import { fmtMoney } from "@/lib/format";
-import { resolveIntent, WRITE_TOOLS } from "./router";
+import { resolveIntent, mergeRuleSpecIntoLlmParams, WRITE_TOOLS } from "./router";
 import { authorize, type Role } from "./rbac";
 import type { TenantContext } from "@/lib/tenant/pool";
 import type { ParsedIntent } from "./router";
@@ -106,7 +106,13 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
   const role: Role = (ctx?.role as Role) ?? "admin";
   const session = await buildSessionContext();
   const resolved = await resolveIntent(text, session);
-  const intent = resolved.intent;
+  let intent = resolved.intent;
+  // Safety net (E.2): the explicit spec markers in the user's text are ground
+  // truth — re-merge them over whatever engine produced the intent (LLM tool
+  // calls of small models tend to drop fields like titles/callouts/utm/images).
+  if (intent.tool === "create_campaign") {
+    intent = { ...intent, params: mergeRuleSpecIntoLlmParams(intent.params, text) };
+  }
   const settings = await getSettings();
   const isWrite = WRITE_TOOLS.has(intent.tool);
   const trace: TraceStep[] = [];

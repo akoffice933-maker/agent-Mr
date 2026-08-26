@@ -4,3 +4,6 @@ node_modules/
 .env.local
 *.log
 tsconfig.tsbuildinfo
+
+# demo ad creative (not part of the app)
+public/agentmr-ad.*

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseIntent } from "@/lib/agent/router";
+import { parseIntent, mergeRuleSpecIntoLlmParams } from "@/lib/agent/router";
 
 describe("parseIntent — rule-based intent parser", () => {
   it("распознаёт сводный расход с периодом", () => {
@@ -199,6 +199,38 @@ describe("create_campaign — full ad-tree spec (E2E runbook grammar)", () => {
     const i = parseIntent("Создай кампанию «X», бюджет 200/день, заголовок «T», текст «D», url https://e.com, старая цена 999");
     expect(i.params.priceOldRubles).toBe(999);
     expect(i.params.priceRubles).toBeUndefined();
+  });
+
+  it("E.2: слово «Запуск» внутри заголовка НЕ крадёт интент у create_campaign (bug 4b)", () => {
+    const i = parseIntent(
+      "Создай кампанию «X», бюджет 300/день, заголовки: Запуск кампаний в один чат, H2, " +
+        "текст «Текст», url https://e.com"
+    );
+    expect(i.tool).toBe("create_campaign");
+    expect(i.params.titles).toEqual(["Запуск кампаний в один чат", "H2"]);
+    // без маркера создания — старое поведение сохранено
+    const i2 = parseIntent("Запусти «Хлеб и соль»");
+    expect(i2.tool).toBe("set_campaign_status");
+    expect(i2.params.status).toBe("active");
+  });
+
+  it("E.2: merge — явный spec в тексте дополняет неполные LLM-параметры", () => {
+    const text =
+      "Создай кампанию в Яндекс Директ «agent-Mr», бюджет 3333/день, " +
+      "заголовки: H1, H2, текст «Текст объявления», url https://agent-mr.example/, " +
+      "уточнения: Уточ 1, Уточ 2, utm: utm_source=agentmr, изображение: https://cdn.example.com/a.jpg";
+    // LLM passed only name/budget/title (small-model drop)
+    const llmParams = { name: "agent-Mr", budget: 3333, title: "H1" };
+    const merged = mergeRuleSpecIntoLlmParams(llmParams, text);
+    expect(merged.titles).toEqual(["H1", "H2"]);
+    expect(merged.text).toBe("Текст объявления");
+    expect(merged.url).toBe("https://agent-mr.example/");
+    expect(merged.callouts).toEqual(["Уточ 1", "Уточ 2"]);
+    expect(merged.trackingParams).toBe("utm_source=agentmr");
+    expect(merged.images).toEqual([{ url: "https://cdn.example.com/a.jpg" }]);
+    // non-create_campaign tool: untouched
+    const other = mergeRuleSpecIntoLlmParams({ days: 7 }, "расход за 7 дней");
+    expect(other).toEqual({ days: 7 });
   });
 
   it("«минус-фразы» БЕЗ создания кампаний — прежний инструмент add_negative_keywords (регрессия)", () => {

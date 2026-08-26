@@ -538,26 +538,40 @@ export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
   if (Array.isArray(i.params.negative_keywords)) params.negativeKeywords = i.params.negative_keywords.map(String);
   if (Array.isArray(i.params.region_ids)) params.regionIds = i.params.region_ids.map(Number);
   // Phase E.2: responsive ad surface (headlines, callouts, price, UTM, images).
-  const titlesList = Array.isArray(i.params.titles) ? i.params.titles.map(String).filter(Boolean).slice(0, 7) : undefined;
+  // intent.params is camelCase (both the LLM resolver and the rule parser emit it);
+  // snake_case variants are accepted defensively (raw LLM arg names).
+  const ip = i.params as Record<string, unknown>;
+  const pickStr = (camel: string, snake: string): string | undefined => {
+    const v = typeof ip[camel] === "string" ? ip[camel] : typeof ip[snake] === "string" ? ip[snake] : undefined;
+    return v && v.trim() ? v.trim() : undefined;
+  };
+  const pickNum = (camel: string, snake: string): number | undefined => {
+    const v = typeof ip[camel] === "number" ? ip[camel] : typeof ip[snake] === "number" ? ip[snake] : undefined;
+    return typeof v === "number" && v > 0 ? Math.round(v) : undefined;
+  };
+  const titlesList = Array.isArray(ip.titles) ? ip.titles.map(String).filter(Boolean).slice(0, 7) : undefined;
   if (titlesList?.length) params.titles = titlesList;
-  const calloutsList = Array.isArray(i.params.callouts) ? i.params.callouts.map(String).filter(Boolean).slice(0, 5) : undefined;
+  const calloutsList = Array.isArray(ip.callouts) ? ip.callouts.map(String).filter(Boolean).slice(0, 5) : undefined;
   if (calloutsList?.length) params.callouts = calloutsList;
-  if (typeof i.params.price_rubles === "number" && i.params.price_rubles > 0) params.priceRubles = Math.round(i.params.price_rubles);
-  if (typeof i.params.price_old_rubles === "number" && i.params.price_old_rubles > 0) params.priceOldRubles = Math.round(i.params.price_old_rubles);
-  if (i.params.price_qualifier === "from" || i.params.price_qualifier === "up_to") params.priceQualifier = i.params.price_qualifier;
-  if (typeof i.params.tracking_params === "string" && i.params.tracking_params.trim()) params.trackingParams = i.params.tracking_params.trim().slice(0, 500);
-  const imagesList = Array.isArray(i.params.images)
-    ? (i.params.images as { url?: string; name?: string }[]).filter((x) => x && typeof x.url === "string" && /^https?:\/\//i.test(x.url)).slice(0, 5)
+  const priceRubles = pickNum("priceRubles", "price_rubles");
+  if (priceRubles) params.priceRubles = priceRubles;
+  const priceOldRubles = pickNum("priceOldRubles", "price_old_rubles");
+  if (priceOldRubles) params.priceOldRubles = priceOldRubles;
+  const priceQualifierRaw = ip.priceQualifier ?? ip.price_qualifier;
+  if (priceQualifierRaw === "from" || priceQualifierRaw === "up_to") params.priceQualifier = priceQualifierRaw;
+  const trackingParams = pickStr("trackingParams", "tracking_params");
+  if (trackingParams) params.trackingParams = trackingParams.slice(0, 500);
+  const imagesList = Array.isArray(ip.images)
+    ? (ip.images as { url?: string; name?: string }[]).filter((x) => x && typeof x.url === "string" && /^https?:\/\//i.test(x.url)).slice(0, 5)
     : undefined;
   if (imagesList?.length) params.images = imagesList;
 
   const adGroupName = typeof params.adGroupName === "string" ? (params.adGroupName as string) : undefined;
   const headlines = (titlesList?.length ? titlesList : typeof params.title === "string" ? [params.title] : []) as string[];
   const hasAd = Boolean(headlines.length && params.text);
-  const priceRubles = typeof params.priceRubles === "number" ? params.priceRubles : undefined;
   const priceLine =
     priceRubles != null
-      ? `${i.params.price_qualifier === "from" ? "от " : i.params.price_qualifier === "up_to" ? "до " : ""}${fmtMoney(priceRubles)}${
+      ? `${params.priceQualifier === "from" ? "от " : params.priceQualifier === "up_to" ? "до " : ""}${fmtMoney(priceRubles)}${
           typeof params.priceOldRubles === "number" ? ` (старая ${fmtMoney(params.priceOldRubles)})` : ""
         }`
       : undefined;
