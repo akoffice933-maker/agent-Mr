@@ -39,8 +39,9 @@ if ! "$PGBIN/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1; then
 fi
 for i in $(seq 1 40); do "$PGBIN/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1 && break; sleep 0.5; done
 
-# 2. Restore node_modules if the sandbox wiped it.
+# 2. Restore node_modules if the sandbox wiped it (root + telegram-bot).
 if [ ! -d node_modules/vitest ]; then npm ci --no-audit --no-fund; fi
+if [ ! -d telegram-bot/node_modules/grammy ]; then (cd telegram-bot && npm ci --no-audit --no-fund); fi
 
 # 3. Ensure .env.
 [ -f .env ] || cp .env.example .env
