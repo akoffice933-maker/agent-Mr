@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "selftest": "tsx src/selftest.ts"
+    "selftest": "tsx src/selftest.ts",
+    "dispatch-selftest": "tsx src/dispatch-selftest.ts"
   },
   "dependencies": {
     "grammy": "^1.30.0"
