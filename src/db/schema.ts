@@ -145,6 +145,12 @@ export const pendingActions = pgTable("pending_actions", {
   executedAt: timestamp("executed_at"),
   verifiedAt: timestamp("verified_at"),
   source: text("source").notNull().default("chat"),
+  // Phase 0.4: optimistic locking — every lifecycle transition bumps version;
+  // concurrent approvers are serialized by the atomic claim + version check.
+  version: integer("version").notNull().default(0),
+  // Phase 0.5: pending actions expire (approval window 48h); failed actions
+  // stay retryable (idempotent resume) but are also swept after 14 days.
+  expiresAt: timestamp("expires_at"),
 });
 
 // ── OAuth state (DB-backed, multi-instance safe) ───────────────────────────
