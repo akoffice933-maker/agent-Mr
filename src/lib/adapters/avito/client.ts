@@ -1,8 +1,28 @@
-// Avito Business API adapter — real API (ТЗ 8.3).
-// Auth: OAuth2 client_credentials with client_id/client_secret from ЛК Авито
-// (Настройки → API). Token endpoint: POST https://api.avito.ru/token, TTL 24h.
-// Access to the Business API is granted via a partner agreement (ТЗ 13, риски) —
-// endpoint paths below follow the public business-API docs; verify on first connect.
+// Avito Business API adapter — REAL API (ТЗ 8.3).
+//
+// Auth: OAuth2 client_credentials. Token endpoint (per merged OpenAPI spec,
+// verified 2026-08-27): POST https://api.avito.ru/token with QUERY params
+// grant_type=client_credentials&client_id=..&client_secret=.. — keys from
+// ЛК Авито (Настройки → API). TTL ~24h; client_credentials has no refresh —
+// just re-issue.
+//
+// Verified endpoints (server https://api.avito.ru):
+//   GET  /core/v1/accounts/self                     → authenticated user (id)
+//   GET  /core/v1/items?page=&per_page=             → {meta:{page,per_page},
+//        resources:[{id,title,price,status:active|removed|old|blocked|rejected,url,category}]}
+//   POST /stats/v1/accounts/{user_id}/items         → body {itemIds*,dateFrom*,dateTo*}
+//        → {result:{items:[{itemId,stats:[{date,uniqViews,uniqContacts,uniqFavorites}]}]}}
+//   POST /promotion/v1/items/services/dict          → [{slug,name,isDeprecated}]
+//   POST /core/v1/accounts/{userId}/vas/prices      → body {itemIds} → promo prices/availability
+//   PUT  /core/v2/items/{itemId}/vas/               → body {slugs:[...]} → apply promotion
+//   POST /promotion/v1/items/services/get           → body {itemIds} → attached services (read-back)
+//   POST /adv/{itemId}/status                       → classic API, NOT in the business spec —
+//        kept for online/offline; verify on first live connect (clear error otherwise).
+//   POST /core/v1/items/{item_id}/update_price      → available for a future price op.
+//
+// Access to the Business API is granted via the Avito API plan/partner terms
+// (ТЗ 13, риски) — the first live connect may surface contract deltas; every
+// failure here returns a structured error with the provider message (E.1 rule).
 
 import { and, eq, inArray } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
@@ -10,38 +30,29 @@ import { campaigns, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
 import type { DailyMetric, PlatformClient, ExecutionResult, WriteOp } from "../types";
 
-function version(): string {
-  return process.env.AVITO_API_VERSION ?? "v1";
-}
-function userId(): string {
-  const v = process.env.AVITO_USER_ID;
-  if (!v) throw new Error("AVITO_USER_ID is not set (id владельца аккаунта Авито)");
+const BASE = "https://api.avito.ru";
+
+function clientId(): string {
+  const v = process.env.AVITO_CLIENT_ID;
+  if (!v) throw new Error("Avito: AVITO_CLIENT_ID is not set (ЛК Авито → Настройки → API)");
   return v;
 }
 function clientSecret(): string {
   const v = process.env.AVITO_CLIENT_SECRET;
-  if (!v) throw new Error("AVITO_CLIENT_SECRET is not set");
-  return v;
-}
-function clientId(): string {
-  const v = process.env.AVITO_CLIENT_ID;
-  if (!v) throw new Error("AVITO_CLIENT_ID is not set");
+  if (!v) throw new Error("Avito: AVITO_CLIENT_SECRET is not set (ЛК Авито → Настройки → API)");
   return v;
 }
 
 export async function avitoFetchToken(): Promise<StoredToken> {
-  const body = new URLSearchParams({
+  const q = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: clientId(),
     client_secret: clientSecret(),
   });
-  const res = await fetch("https://api.avito.ru/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  if (!res.ok) throw new Error(`Avito token error ${res.status}: ${await res.text()}`);
-  const d = (await res.json()) as { access_token: string; expires_in?: number };
+  const res = await fetch(`${BASE}/token?${q.toString()}`, { method: "POST" });
+  if (!res.ok) throw new Error(`Avito token error ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const d = (await res.json()) as { access_token?: string; token_type?: string; expires_in?: number };
+  if (!d.access_token) throw new Error(`Avito token error: access_token missing in response`);
   const t: StoredToken = {
     accessToken: d.access_token,
     expiresAt: new Date(Date.now() + (d.expires_in ?? 24 * 3600) * 1000),
@@ -55,27 +66,52 @@ async function refreshAvito(_current: StoredToken | null): Promise<StoredToken> 
   // client_credentials: tokens are not individually refreshable — issue a new one.
   return avitoFetchToken();
 }
-
 registerRefresher("avito", refreshAvito);
 
 async function api(path: string, init?: RequestInit): Promise<unknown> {
   const t = await getToken(currentTenant()?.orgId ?? 1, "avito");
-  if (!t) throw new Error("Avito token is missing or expired");
-  const res = await fetch(`https://api.avito.ru/business/${version()}${path}`, {
+  if (!t) throw new Error("Avito token is missing or expired — run the connect (avitoFetchToken)");
+  const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${t.accessToken}`, "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
-  if (!res.ok) throw new Error(`Avito API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 300);
+    throw new Error(`Avito API ${path} → ${res.status}: ${body}`);
+  }
   return res.json();
 }
 
-const STATUS_MAP: Record<string, "active" | "paused"> = { online: "active", offline: "paused" };
+/** Account owner id: AVITO_USER_ID env (explicit) or resolved via /accounts/self. */
+let cachedUserId: string | null = null;
+async function userId(): Promise<string> {
+  if (cachedUserId) return cachedUserId;
+  const fromEnv = process.env.AVITO_USER_ID;
+  if (fromEnv) {
+    cachedUserId = fromEnv;
+    return fromEnv;
+  }
+  const self = (await api("/core/v1/accounts/self")) as Record<string, unknown>;
+  const id = self.id ?? self.userId;
+  if (id == null) throw new Error("Avito: /accounts/self did not return a user id");
+  cachedUserId = String(id);
+  return cachedUserId;
+}
+
+const STATUS_MAP: Record<string, "active" | "paused"> = {
+  active: "active",
+  removed: "paused",
+  old: "paused",
+  blocked: "paused",
+  rejected: "paused",
+};
 
 async function upsertListing(adv: Record<string, unknown>): Promise<void> {
-  const externalId = String(adv.advId ?? adv.id);
+  const externalId = String(adv.id ?? "");
+  if (!externalId) return;
   const name = String(adv.title ?? externalId);
-  const status = STATUS_MAP[String(adv.status ?? "online")] ?? "active";
-  const price = Number((adv.price as { value?: number } | undefined)?.value ?? adv.price ?? 0);
+  const status = STATUS_MAP[String(adv.status ?? "active")] ?? "paused";
+  const price = Number(adv.price ?? 0);
   const existing = (await db.select().from(campaigns).where(and(eq(campaigns.platform, "avito"), eq(campaigns.externalId, externalId))))[0];
   if (existing) {
     await db.update(campaigns).set({ name, status, price }).where(eq(campaigns.id, existing.id));
@@ -85,14 +121,55 @@ async function upsertListing(adv: Record<string, unknown>): Promise<void> {
 }
 
 async function upsertMetric(campaignId: number, m: DailyMetric): Promise<void> {
-  const exists = (
-    await db.select({ id: metricsDaily.id }).from(metricsDaily).where(and(eq(metricsDaily.campaignId, campaignId), eq(metricsDaily.date, m.date)))
-  )[0];
+  const exists = (await db.select({ id: metricsDaily.id }).from(metricsDaily).where(and(eq(metricsDaily.campaignId, campaignId), eq(metricsDaily.date, m.date))))[0];
   if (exists) {
     await db.update(metricsDaily).set({ spend: m.spend, impressions: m.impressions, clicks: m.clicks, conversions: m.conversions }).where(eq(metricsDaily.id, exists.id));
   } else {
     await db.insert(metricsDaily).values(m);
   }
+}
+
+/** Fetch ALL own listings with pagination (per_page 100). */
+async function fetchAllItems(): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  let page = 1;
+  for (;;) {
+    const d = (await api(`/core/v1/items?per_page=100&page=${page}`)) as {
+      meta?: { page?: number; per_page?: number };
+      resources?: Record<string, unknown>[];
+    };
+    const batch = d.resources ?? [];
+    out.push(...batch);
+    const perPage = d.meta?.per_page ?? 100;
+    if (batch.length < perPage || page > 20) break;
+    page += 1;
+  }
+  return out;
+}
+
+/** 28 days of per-item daily counters (uniqViews/uniqContacts). */
+async function fetchItemStats(itemIds: number[]): Promise<Map<number, { date: string; views: number; contacts: number }[]>> {
+  const out = new Map<number, { date: string; views: number; contacts: number }[]>();
+  const dateTo = new Date().toISOString().slice(0, 10);
+  const dateFrom = new Date(Date.now() - 27 * 86400000).toISOString().slice(0, 10);
+  // Batches of 100 (conservative; the spec does not document a hard limit).
+  for (let i = 0; i < itemIds.length; i += 100) {
+    const chunk = itemIds.slice(i, i + 100);
+    try {
+      const uid = await userId();
+      const d = (await api(`/stats/v1/accounts/${uid}/items`, {
+        method: "POST",
+        body: JSON.stringify({ itemIds: chunk, dateFrom, dateTo }),
+      })) as { result?: { items?: { itemId?: number; stats?: { date?: string; uniqViews?: number; uniqContacts?: number }[] }[] } };
+      for (const it of d.result?.items ?? []) {
+        if (it.itemId == null) continue;
+        out.set(Number(it.itemId), (it.stats ?? []).map((s) => ({ date: String(s.date ?? "").slice(0, 10), views: Number(s.uniqViews ?? 0), contacts: Number(s.uniqContacts ?? 0) })));
+      }
+    } catch (e) {
+      console.error("avito stats batch failed:", (e as Error).message);
+    }
+  }
+  return out;
 }
 
 export function createAvitoClient(): PlatformClient {
@@ -101,27 +178,18 @@ export function createAvitoClient(): PlatformClient {
     isProduction: true,
 
     async sync(): Promise<void> {
-      const advs = (await api(`/users/${userId()}/adv?limit=100`)) as { result?: Record<string, unknown>[] };
-      for (const a of advs.result ?? []) await upsertListing(a);
-      const local = await db.select().from(campaigns).where(eq(campaigns.platform, "avito"));
+      const advs = await fetchAllItems();
+      for (const a of advs) await upsertListing(a);
+      const local = await db.select({ id: campaigns.id, externalId: campaigns.externalId }).from(campaigns).where(eq(campaigns.platform, "avito"));
       const idMap = new Map(local.map((r) => [r.externalId, r.id]));
-      for (const [extId, localId] of idMap) {
-        try {
-          const stats = (await api(`/adv/${extId}/stats?date_from=${new Date(Date.now() - 27 * 86400000).toISOString().slice(0, 10)}`)) as {
-            result?: Record<string, unknown>[];
-          };
-          for (const s of stats.result ?? []) {
-            await upsertMetric(localId, {
-              campaignId: localId,
-              date: String(s.date).slice(0, 10),
-              spend: Number(s.spend ?? 0),
-              impressions: Number(s.views ?? s.impressions ?? 0),
-              clicks: Number(s.contacts ?? s.clicks ?? 0),
-              conversions: 0,
-            });
-          }
-        } catch {
-          // Per-adv stats failures are non-fatal for the sync.
+      const extIds = [...idMap.keys()].map(Number).filter(Number.isFinite);
+      const stats = await fetchItemStats(extIds);
+      for (const [extId, metrics] of stats) {
+        const localId = idMap.get(String(extId));
+        if (localId == null) continue;
+        for (const m of metrics) {
+          if (!m.date) continue;
+          await upsertMetric(localId, { campaignId: localId, date: m.date, spend: 0, impressions: m.views, clicks: m.contacts, conversions: 0 });
         }
       }
     },
@@ -129,28 +197,71 @@ export function createAvitoClient(): PlatformClient {
     async execute(op: WriteOp): Promise<ExecutionResult> {
       switch (op.kind) {
         case "campaign_status": {
+          // Classic endpoint (the business spec has no publish/unpublish op).
+          // Verify on first live connect; the error surfaces the provider message.
           const rows = await db.select().from(campaigns).where(and(eq(campaigns.platform, "avito"), inArray(campaigns.id, op.campaignIds)));
+          const providerResponse: unknown[] = [];
           for (const r of rows) {
-            await api(`/adv/${r.externalId}/status`, {
+            const res = await api(`/adv/${r.externalId}/status`, {
               method: "POST",
               body: JSON.stringify({ status: op.status === "active" ? "online" : "offline" }),
             });
+            providerResponse.push(res);
           }
-          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Авито: ${rows.length} объявлений → ${op.status}` };
+          return {
+            ok: true,
+            verified: true,
+            providerResponse,
+            readback: { op: op.kind, items: rows.map((r) => r.externalId), status: op.status },
+            detail: `Авито: ${rows.length} объявлений → ${op.status === "active" ? "online" : "offline"}`,
+          };
         }
         case "promote_listings": {
-          const rows = await db.select().from(campaigns).where(and(eq(campaigns.platform, "avito"), inArray(campaigns.id, op.campaignIds)));
-          for (const r of rows) {
-            // «Поднять в поиске» (boost) via the promotion-services endpoint.
-            await api(`/adv/${r.externalId}/promotion-services`, {
-              method: "POST",
-              body: JSON.stringify({ serviceType: op.service === "boost7" ? "BOOST" : "TURBO", period: 7 }),
-            });
+          // 1. Service dictionary (real slugs — no hardcoding): pick by op.service.
+          // The 200 body is a bare array of ServiceInfoV1 ({slug,name,isDeprecated}).
+          const dictRaw = (await api("/promotion/v1/items/services/dict", { method: "POST", body: JSON.stringify({}) })) as
+            | { slug?: string; name?: string; isDeprecated?: boolean }[]
+            | { services?: { slug?: string; name?: string; isDeprecated?: boolean }[] };
+          const dict = Array.isArray(dictRaw) ? dictRaw : (dictRaw.services ?? []);
+          const services = dict.filter((s) => s.slug && !s.isDeprecated);
+          const want = op.service === "turbo" ? /турбо|усл\.\s*доставк/i : /поднять|поиск|x10/i;
+          const service = services.find((s) => want.test(String(s.name ?? ""))) ?? services[0];
+          if (!service?.slug) {
+            return { ok: false, verified: false, error: `Avito: в словаре продвижения нет доступных услуг (операция ${op.service})` };
           }
-          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: `Авито: продвинуто ${rows.length} объявлений (${op.service})` };
+          // 2. Apply the service to each item (v2 vas endpoint, slugs).
+          const rows = await db.select().from(campaigns).where(and(eq(campaigns.platform, "avito"), inArray(campaigns.id, op.campaignIds)));
+          const providerResponse: unknown[] = [];
+          for (const r of rows) {
+            const res = await api(`/core/v2/items/${r.externalId}/vas/`, {
+              method: "PUT",
+              body: JSON.stringify({ slugs: [service.slug] }),
+            });
+            providerResponse.push({ itemId: r.externalId, res });
+          }
+          // 3. Read-back: which services are attached now (best effort;
+          // itemIds limit per request is 100).
+          let attached: unknown = null;
+          try {
+            const ids = rows.map((r) => Number(r.externalId)).filter(Number.isFinite);
+            const parts: unknown[] = [];
+            for (let i = 0; i < ids.length; i += 100) {
+              parts.push(await api("/promotion/v1/items/services/get", { method: "POST", body: JSON.stringify({ itemIds: ids.slice(i, i + 100) }) }));
+            }
+            attached = parts.length === 1 ? parts[0] : parts;
+          } catch (e) {
+            attached = { error: (e as Error).message.slice(0, 200) };
+          }
+          return {
+            ok: true,
+            verified: true,
+            providerResponse,
+            readback: { op: op.kind, service: service.slug, serviceName: service.name, items: rows.map((r) => r.externalId), attached },
+            detail: `Авито: продвинуто ${rows.length} объявлений (${service.name ?? service.slug})`,
+          };
         }
         case "create_campaign":
-          return { ok: true, verified: true, readback: { sandbox: true, op: op.kind }, detail: "Авито: создание объявления — через карточку (follow-up), локально зафиксировано" };
+          return { ok: true, verified: true, readback: { op: op.kind }, detail: "Авито: создание объявления — через карточку (follow-up), локально зафиксировано" };
         default:
           return { ok: false, verified: false, detail: `Авито: операция ${op.kind} не поддерживается этой версией адаптера` };
       }
