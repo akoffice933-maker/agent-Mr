@@ -43,6 +43,13 @@ interface GoogleAdsLib {
   toMicros: (v: number) => number;
 }
 
+/** The customer surface the adapter uses — also implemented by the
+ *  in-process simulator (E.1-for-Google test seam). */
+export interface GoogleAdsCustomerLike {
+  query(gaql: string): Promise<unknown>;
+  mutateResources(ops: unknown[]): Promise<unknown>;
+}
+
 const OAUTH = "https://oauth2.googleapis.com";
 const AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 
@@ -122,6 +129,11 @@ function g(row: Row, ...path: string[]): any {
 }
 const num = (v: any): number => Number(v ?? 0) || 0;
 
+// CampaignStatus arrives as a protobuf number (ENABLED=2, PAUSED=3, REMOVED=4)
+// or a REST name depending on client config — compare normalized.
+const STATUS_BY_NUM: Record<number, string> = { 2: "ENABLED", 3: "PAUSED", 4: "REMOVED" };
+const normStatus = (v: unknown): string => (typeof v === "number" ? STATUS_BY_NUM[v] ?? String(v) : String(v ?? "").toUpperCase());
+
 let cachedLib: GoogleAdsLib | null = null;
 async function loadLib(): Promise<GoogleAdsLib> {
   if (cachedLib) return cachedLib;
@@ -137,12 +149,6 @@ let cachedApi: InstanceType<GoogleAdsLib["GoogleAdsApi"]> | null = null;
 function apiSingleton(lib: GoogleAdsLib) {
   if (!cachedApi) cachedApi = new lib.GoogleAdsApi({ client_id: clientId(), client_secret: clientSecret(), developer_token: developerToken() });
   return cachedApi;
-}
-async function makeCustomer() {
-  const lib = await loadLib();
-  const t = await getToken(currentTenant()?.orgId ?? 1, "google");
-  if (!t?.refreshToken) throw new Error("Google refresh token is missing — reconnect the account via /safety → Google Ads");
-  return apiSingleton(lib).Customer({ customer_id: customerId(), refresh_token: t.refreshToken });
 }
 /** Wrap library errors with the provider message (E.1: never an opaque failure). */
 async function withProviderError<T>(fn: () => Promise<T>, what: string): Promise<T> {
@@ -164,7 +170,16 @@ async function upsertMetric(campaignId: number, m: DailyMetric): Promise<void> {
   }
 }
 
-export function createGoogleClient(): PlatformClient {
+export function createGoogleClient(opts?: { makeCustomer?: () => Promise<GoogleAdsCustomerLike> }): PlatformClient {
+  const makeCustomer = opts?.makeCustomer ?? (async () => {
+    const lib = await loadLib();
+    const t = await getToken(currentTenant()?.orgId ?? 1, "google");
+    if (!t?.refreshToken) throw new Error("Google refresh token is missing — reconnect the account via /safety → Google Ads");
+    return (cachedApi ??= new lib.GoogleAdsApi({ client_id: clientId(), client_secret: clientSecret(), developer_token: developerToken() })).Customer({
+      customer_id: customerId(),
+      refresh_token: t.refreshToken,
+    }) as unknown as GoogleAdsCustomerLike;
+  });
   return {
     platform: "google",
     isProduction: true,
@@ -260,7 +275,8 @@ export function createGoogleClient(): PlatformClient {
             () => customer.query(`SELECT campaign.id, campaign.status FROM campaign WHERE campaign.id IN (${ids.join(",")})`),
             "campaign status read-back"
           );
-          const bad = rowsOf(check).filter((r) => g(r, "campaign", "status") !== (op.status === "active" ? "ENABLED" : "PAUSED"));
+          const target = op.status === "active" ? "ENABLED" : "PAUSED";
+          const bad = rowsOf(check).filter((r) => normStatus(g(r, "campaign", "status")) !== target);
           const verified = bad.length === 0;
           const skipped = rows.length - valid.length;
           return {
@@ -288,12 +304,28 @@ export function createGoogleClient(): PlatformClient {
             } as unknown as resources.ICampaignCriterion,
           }));
           const providerResponse = await withProviderError(() => customer.mutateResources(operations), "negative criteria");
+          // Read-back: every word must exist as a negative criterion of the campaign.
+          let verified = true;
+          let found: string[] = [];
+          if (r?.externalId && op.words.length) {
+            const words = op.words.slice(0, 100);
+            const rbGaql = `SELECT campaign_criterion.negative.keyword.text FROM campaign_criterion WHERE campaign_criterion.campaign = "${ResourceNames.campaign(cid, r.externalId)}" AND campaign_criterion.negative.keyword.text IN (${words.map((w) => `"${w.replace(/"/g, '""')}"`).join(",")})`;
+            try {
+              const rb = await withProviderError(() => customer.query(rbGaql), "negative read-back");
+              found = rowsOf(rb).map((row) => String(g(row, "campaign_criterion", "negative", "keyword", "text") ?? "")).filter(Boolean);
+              verified = words.every((w) => found.includes(w));
+            } catch (e) {
+              verified = false;
+            }
+          }
           return {
             ok: true,
-            verified: true,
+            verified,
             providerResponse,
-            readback: { op: op.kind, words: op.words.slice(0, 100), campaign: r?.name ?? op.campaignId },
-            detail: `Google Ads: ${op.words.length} минус-фраз → «${r?.name ?? op.campaignId}»`,
+            readback: { op: op.kind, words: op.words.slice(0, 100), found, campaign: r?.name ?? op.campaignId },
+            detail: verified
+              ? `Google Ads: ${op.words.length} минус-фраз → «${r?.name ?? op.campaignId}» (read-back совпал)`
+              : `Google Ads: read-back минус-фраз не совпал (найдено ${found.length}/${op.words.length})`,
           };
         }
         case "bids_factor": {
@@ -311,38 +343,96 @@ export function createGoogleClient(): PlatformClient {
             );
             resolved = rowsOf(res).map((r) => ({ critId: Number(g(r, "ad_group_criterion", "id")), adGroupRes: String(g(r, "ad_group_criterion", "ad_group") ?? "") })).filter((x) => x.critId && x.adGroupRes);
           }
-          const operations: MutateOperation<resources.IAdGroupCriterion>[] = withExt
+          const planned = withExt
             .map((k) => ({ k, r: resolved.find((x) => x.critId === Number(k.externalId)) }))
-            .filter((x): x is { k: (typeof withExt)[number]; r: { critId: number; adGroupRes: string } } => Boolean(x.r))
-            .map(({ k, r }) => {
-              const adGroupId = r.adGroupRes.split("/").pop() ?? "";
-              return {
-                entity: "ad_group_criterion" as const,
-                operation: "update" as const,
-                resource: {
-                  resource_name: ResourceNames.adGroupCriterion(cid, adGroupId, k.externalId as string),
-                  cpc_bid_micros: toMicros(Math.max(0.05, k.bid * op.factor)),
-                } as unknown as resources.IAdGroupCriterion,
-              };
-            });
-          const providerResponse = await withProviderError(() => customer.mutateResources(operations), "keyword bids");
+            .filter((x): x is { k: (typeof withExt)[number]; r: { critId: number; adGroupRes: string } } => Boolean(x.r));
+          const operations: (MutateOperation<resources.IAdGroupCriterion> & { critId: number; expectedMicros: number })[] = planned.map(({ k, r }) => {
+            const adGroupId = r.adGroupRes.split("/").pop() ?? "";
+            const expectedMicros = toMicros(Math.max(0.05, k.bid * op.factor));
+            return {
+              critId: Number(k.externalId),
+              expectedMicros,
+              entity: "ad_group_criterion" as const,
+              operation: "update" as const,
+              resource: {
+                resource_name: ResourceNames.adGroupCriterion(cid, adGroupId, k.externalId as string),
+                cpc_bid_micros: expectedMicros,
+              } as unknown as resources.IAdGroupCriterion,
+            };
+          });
+          const providerResponse = await withProviderError(() => customer.mutateResources(operations.map(({ critId, expectedMicros, ...o }) => o)), "keyword bids");
+          // Read-back: every bid must match the planned value (±1 micro rounding).
+          let verified = true;
+          let matched = 0;
+          if (operations.length) {
+            const rb = await withProviderError(
+              () => customer.query(`SELECT ad_group_criterion.id, ad_group_criterion.cpc_bid_micros FROM ad_group_criterion WHERE ad_group_criterion.id IN (${operations.map((o) => o.critId).join(",")})`),
+              "bid read-back"
+            );
+            const got = new Map(rowsOf(rb).map((row) => [Number(g(row, "ad_group_criterion", "id")), Number(g(row, "ad_group_criterion", "cpc_bid_micros") ?? 0)]));
+            matched = operations.filter((o) => {
+              const v = got.get(o.critId);
+              return v != null && Math.abs(v - o.expectedMicros) <= 1;
+            }).length;
+            verified = matched === operations.length;
+          }
           const unresolved = withExt.length - operations.length;
           return {
             ok: true,
-            verified: true,
+            verified,
             providerResponse,
-            readback: { op: op.kind, factor: op.factor, keywords: operations.length },
-            detail: `Google Ads: ставки ×${op.factor} по ${operations.length} ключам` + (unresolved ? ` · без ad-group id пропущено: ${unresolved}` : ""),
+            readback: { op: op.kind, factor: op.factor, planned: operations.length, matched },
+            detail:
+              (verified
+                ? `Google Ads: ставки ×${op.factor} по ${operations.length} ключам (read-back совпал)`
+                : `Google Ads: read-back ставок не совпал (${matched}/${operations.length})`) +
+              (unresolved ? ` · без ad-group id пропущено: ${unresolved}` : ""),
+          };
+        }
+        case "delete_campaign_tree": {
+          // Saga compensation / explicit cleanup: remove the campaign at the
+          // provider (Google cascades: ad groups, criteria, ads go with it),
+          // read-back must confirm REMOVED, then drop the local mirror rows.
+          const row = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
+          if (!row) return { ok: false, verified: false, detail: `Google Ads: локальная кампания #${op.campaignId} не найдена` };
+          if (!row.externalId) return { ok: false, verified: false, detail: `Google Ads: кампания «${row.name}» без external id — удалить вручную в Google Ads` };
+          const extId = row.externalId;
+          const providerResponse = await withProviderError(
+            () =>
+              customer.mutateResources([
+                { entity: "campaign", operation: "remove", resource: { resource_name: ResourceNames.campaign(cid, extId) } },
+              ]),
+            "campaign remove"
+          );
+          const rb = await withProviderError(
+            () => customer.query(`SELECT campaign.id, campaign.status FROM campaign WHERE campaign.id = ${Number(extId)}`),
+            "campaign remove read-back"
+          );
+          const left = rowsOf(rb).find((r) => normStatus(g(r, "campaign", "status")) !== "REMOVED");
+          const verified = !left;
+          // Local mirror cleanup is the agent flow's job (run.ts applyLocal —
+          // platform-agnostic, also removes metrics_daily/keywords/negatives),
+          // exactly like the Yandex path: the adapter only owns the provider.
+          return {
+            ok: true,
+            verified,
+            providerResponse,
+            readback: { op: op.kind, externalId: extId, stillActive: left ? g(left, "campaign", "id") : null },
+            detail: verified
+              ? `Google Ads: кампания «${row.name}» удалена у провайдера (read-back: REMOVED)`
+              : `Google Ads: кампания «${row.name}» не подтверждена удалённой — проверьте в Google Ads`,
           };
         }
         case "campaign_budget":
         case "create_campaign":
-        case "promote_listings":
+        case "promote_listings": {
+          const followUp = op.kind;
           // Follow-up: requires budget resource resolution / full campaign tree (ad groups,
           // bid strategies) on the platform side. Local mirror is updated either way.
-          return { ok: true, verified: true, readback: { op: op.kind, sandbox: false }, detail: `Google Ads: ${op.kind} зафиксирован локально, платформенный вызов — follow-up` };
+          return { ok: true, verified: true, readback: { op: followUp, sandbox: false }, detail: `Google Ads: ${followUp} зафиксирован локально, платформенный вызов — follow-up` };
+        }
         default:
-          return { ok: false, verified: false, detail: `Google Ads: операция ${op.kind} не поддерживается этой версией адаптера` };
+          return { ok: false, verified: false, detail: `Google Ads: операция ${(op as { kind: string }).kind} не поддерживается этой версией адаптера` };
       }
     },
   };
