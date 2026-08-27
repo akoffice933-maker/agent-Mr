@@ -114,8 +114,20 @@ export function parseIntent(raw: string): ParsedIntent {
   // create grammar below parses "минус-фразы:" as part of the full spec)
   const isCreateRequest = /(создай|создать|запусти новую|новая кампани|сделай кампани)/.test(norm);
   if (!isCreateRequest && /минус[-\s]?(фраз|слов|ключ|ключев)|добавь минус|исключи (слова|фразы|запросы)/.test(norm)) {
-    const words = parseQuotedWords(norm);
-    return { ...base, tool: "add_negative_keywords", params: { words, campaignHint: norm } };
+    // Campaign target in «в кампанию «NAME»» / «для «NAME»» form — it is the
+    // target, not a negative word.
+    const campM = norm.match(/(?:в|для|к)\s+(?:кампани[яю]|группу|группе)?\s*[«"„']([^»"“']{2,60})[»"“']/);
+    const campName = campM ? campM[1].trim() : undefined;
+    const words = parseQuotedWords(norm).filter((w) => w !== campName);
+    // Colon-list form: «минус-фразы: a, b, c» (unquoted values).
+    const listM = norm.match(/минус[-\s]?(?:фразы?|слов[а-я]*|ключ[а-я]*|ключев[а-я]*)?\s*:\s*([^;.]+)/);
+    if (listM) {
+      for (const w of listM[1].split(",")) {
+        const t = w.trim().replace(/—.*$/, "").trim(); // cut « — в кампанию …» tails
+        if (t.length > 1 && t !== campName && !words.includes(t)) words.push(t);
+      }
+    }
+    return { ...base, tool: "add_negative_keywords", params: { words, campaignHint: campName ?? norm } };
   }
 
   // 2. Apply recommendation(s)
@@ -159,10 +171,10 @@ export function parseIntent(raw: string): ParsedIntent {
     return { ...base, tool: "pause_low_ctr_campaigns", params: { threshold } };
   }
 
-  // 6. Adjust bids
-  if (/(ставк|бид|bid)/.test(norm) && /(подним|увелич|повыс|уменьш|сниз|опуст|измен|скорректир|плюс|коррект)/.test(norm)) {
+  // 6. Adjust bids (stems, so both «повысь» and «повышай» match)
+  if (/(ставк|бид|bid)/.test(norm) && /(подним|повыш|пониж|увелич|уменьш|сниз|опуст|измен|скорректир|плюс|коррект)/.test(norm)) {
     const percent = parsePercent(norm);
-    const decrease = /(уменьш|сниз|опуст|пониз|минус)/.test(norm);
+    const decrease = /(уменьш|сниз|опуст|пониз|пониж|минус)/.test(norm);
     const filter = /(конверси|конверт)/.test(norm) ? "with_conversions" : "all";
     return { ...base, tool: "adjust_bids", params: { percent, direction: decrease ? "down" : "up", filter } };
   }

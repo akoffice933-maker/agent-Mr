@@ -708,10 +708,16 @@ export async function addNegativeKeywords(i: ParsedIntent): Promise<ToolOutput> 
   }
 
   const platform = (i.platforms[0] ?? "google") as Platform;
-  const camps = (await loadCampaigns()).filter(
-    (c) => c.platform === platform && c.kind === "campaign" && c.status === "active"
-  );
-  const search = camps.find((c) => /поиск|search/.test(c.name.toLowerCase())) ?? camps[0];
+  const allCamps = await loadCampaigns();
+  const camps = allCamps.filter((c) => c.platform === platform && c.kind === "campaign" && c.status === "active");
+  // A named target (parser: «в кампанию «NAME»») wins over the heuristic and
+  // works regardless of campaign status (negatives apply once it's live again).
+  const hint = typeof i.params.campaignHint === "string" ? i.params.campaignHint.trim().toLowerCase() : "";
+  const byHint = hint
+    ? allCamps.find((c) => c.platform === platform && c.kind === "campaign" && c.name.toLowerCase() === hint) ??
+      allCamps.find((c) => c.platform === platform && c.kind === "campaign" && c.name.toLowerCase().includes(hint))
+    : undefined;
+  const search = byHint ?? camps.find((c) => /поиск|search/.test(c.name.toLowerCase())) ?? camps[0];
   if (!search) {
     return {
       result: { kind: "text", text: `Нет активной кампании в ${PLATFORM_LABEL[platform]} для добавления минус-фраз.` },

@@ -214,6 +214,24 @@ describe("create_campaign — full ad-tree spec (E2E runbook grammar)", () => {
     expect(i2.params.status).toBe("active");
   });
 
+  it("E.2: минус-фразы списком + цель «в кампанию «NAME»» (имя кампании — не слово)", () => {
+    const i = parseIntent("Добавь минус-фразы: бесплатно, своими руками — в кампанию «Поиск — Кухни под заказ Москва»");
+    expect(i.tool).toBe("add_negative_keywords");
+    expect(i.params.words).toEqual(["бесплатно", "своими руками"]);
+    expect(i.params.campaignHint).toBe("поиск — кухни под заказ москва");
+  });
+
+  it("E.2: ставки — повелительные «повышай/понижай»", () => {
+    const up = parseIntent("Повышай ставки на 20% по ключам с конверсиями в Google");
+    expect(up.tool).toBe("adjust_bids");
+    expect(up.params.percent).toBe(20);
+    expect(up.params.direction).toBe("up");
+    expect(up.params.filter).toBe("with_conversions");
+    const down = parseIntent("Понижай ставки на 10%");
+    expect(down.tool).toBe("adjust_bids");
+    expect(down.params.direction).toBe("down");
+  });
+
   it("E.2: merge — явный spec в тексте дополняет неполные LLM-параметры", () => {
     const text =
       "Создай кампанию в Яндекс Директ «agent-Mr», бюджет 3333/день, " +
