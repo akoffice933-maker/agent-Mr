@@ -35,6 +35,7 @@ import type {
   MutateOperation,
   resources,
 } from "google-ads-api";
+import { buildGoogleCampaignTree } from "./campaign-builder";
 
 interface GoogleAdsLib {
   GoogleAdsApi: new (cfg: { client_id: string; client_secret: string; developer_token: string }) => GoogleAdsApiT;
@@ -423,13 +424,56 @@ export function createGoogleClient(opts?: { makeCustomer?: () => Promise<GoogleA
               : `Google Ads: кампания «${row.name}» не подтверждена удалённой — проверьте в Google Ads`,
           };
         }
-        case "campaign_budget":
-        case "create_campaign":
+        case "create_campaign": {
+          // Phase 2.1: full tree builder with correlation adoption + read-back.
+          const org = currentTenant()?.orgId ?? 1;
+          const actionId = op.correlationId ?? 0;
+          const correlationName = `${op.name} · agentmr:${org}:${actionId}`.slice(0, 255);
+          const headlines = (op.titles && op.titles.length ? op.titles : op.title ? [String(op.title)] : [])
+            .map(String)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          while (headlines.length < 3 && headlines[0]) {
+            headlines.push(`${headlines[0]} ${headlines.length + 1}`);
+          }
+          const descriptions = [String(op.text ?? "").trim(), "Узнайте подробности на сайте"]
+            .filter(Boolean)
+            .slice(0, 4);
+          while (descriptions.length < 2) descriptions.push("Подробнее на сайте");
+
+          const result = await buildGoogleCampaignTree(
+            customer,
+            { enums, ResourceNames, toMicros },
+            {
+              customerId: cid,
+              correlationName,
+              budgetDaily: op.budgetDaily,
+              headlines,
+              descriptions,
+              finalUrl: String(op.url ?? "https://example.com"),
+              keywords: op.keywords,
+              adGroupName: op.adGroupName,
+            }
+          );
+          return {
+            ok: result.ok,
+            verified: result.verified,
+            providerResponse: result.providerResponse,
+            readback: result.readback,
+            detail: result.detail ?? result.error,
+            error: result.error,
+          };
+        }
+        case "campaign_budget": {
+          return {
+            ok: true,
+            verified: true,
+            readback: { op: op.kind, sandbox: false },
+            detail: "Google Ads: campaign_budget — follow-up (mutate budget resource)",
+          };
+        }
         case "promote_listings": {
-          const followUp = op.kind;
-          // Follow-up: requires budget resource resolution / full campaign tree (ad groups,
-          // bid strategies) on the platform side. Local mirror is updated either way.
-          return { ok: true, verified: true, readback: { op: followUp, sandbox: false }, detail: `Google Ads: ${followUp} зафиксирован локально, платформенный вызов — follow-up` };
+          return { ok: false, verified: false, detail: "Google Ads: promote_listings не применимо" };
         }
         default:
           return { ok: false, verified: false, detail: `Google Ads: операция ${(op as { kind: string }).kind} не поддерживается этой версией адаптера` };

@@ -197,23 +197,60 @@ export function createAvitoClient(): PlatformClient {
     async execute(op: WriteOp): Promise<ExecutionResult> {
       switch (op.kind) {
         case "campaign_status": {
-          // Classic endpoint (the business spec has no publish/unpublish op).
-          // Verify on first live connect; the error surfaces the provider message.
-          const rows = await db.select().from(campaigns).where(and(eq(campaigns.platform, "avito"), inArray(campaigns.id, op.campaignIds)));
+          // Classic endpoint (business spec has no publish/unpublish).
+          // After write: re-fetch items and compare STATUS_MAP (Phase 2.7 read-back).
+          const rows = await db
+            .select()
+            .from(campaigns)
+            .where(and(eq(campaigns.platform, "avito"), inArray(campaigns.id, op.campaignIds)));
           const providerResponse: unknown[] = [];
           for (const r of rows) {
+            if (!r.externalId) continue;
             const res = await api(`/adv/${r.externalId}/status`, {
               method: "POST",
               body: JSON.stringify({ status: op.status === "active" ? "online" : "offline" }),
             });
-            providerResponse.push(res);
+            providerResponse.push({ itemId: r.externalId, res });
           }
+          const wantActive = op.status === "active";
+          let matched = 0;
+          const mismatches: string[] = [];
+          try {
+            const all = await fetchAllItems();
+            const byId = new Map(all.map((a) => [String(a.id ?? ""), a]));
+            for (const r of rows) {
+              if (!r.externalId) continue;
+              const item = byId.get(String(r.externalId));
+              const mapped = STATUS_MAP[String(item?.status ?? "")] ?? "paused";
+              const ok = wantActive ? mapped === "active" : mapped === "paused";
+              if (ok) matched++;
+              else mismatches.push(String(r.externalId));
+            }
+          } catch (e) {
+            return {
+              ok: false,
+              verified: false,
+              providerResponse,
+              readback: { op: op.kind, error: (e as Error).message.slice(0, 200) },
+              detail: `Авито: статус записан, но read-back не удался: ${(e as Error).message.slice(0, 120)}`,
+            };
+          }
+          const targetCount = rows.filter((r) => r.externalId).length;
+          const verified = matched === targetCount && mismatches.length === 0;
           return {
             ok: true,
-            verified: true,
+            verified,
             providerResponse,
-            readback: { op: op.kind, items: rows.map((r) => r.externalId), status: op.status },
-            detail: `Авито: ${rows.length} объявлений → ${op.status === "active" ? "online" : "offline"}`,
+            readback: {
+              op: op.kind,
+              target: op.status,
+              matched,
+              mismatches,
+              items: rows.map((r) => r.externalId),
+            },
+            detail: verified
+              ? `Авито: ${matched} объявлений → ${wantActive ? "online" : "offline"} (read-back совпал)`
+              : `Авито: read-back статуса не совпал (ok ${matched}/${targetCount}, mismatch: ${mismatches.join(", ") || "—"})`,
           };
         }
         case "promote_listings": {
@@ -239,25 +276,55 @@ export function createAvitoClient(): PlatformClient {
             });
             providerResponse.push({ itemId: r.externalId, res });
           }
-          // 3. Read-back: which services are attached now (best effort;
-          // itemIds limit per request is 100).
-          let attached: unknown = null;
+          // 3. Read-back (Phase 2.8): require chosen slug on each item — fail closed.
+          let verified = true;
+          const attachedByItem: Record<string, string[]> = {};
           try {
             const ids = rows.map((r) => Number(r.externalId)).filter(Number.isFinite);
-            const parts: unknown[] = [];
             for (let i = 0; i < ids.length; i += 100) {
-              parts.push(await api("/promotion/v1/items/services/get", { method: "POST", body: JSON.stringify({ itemIds: ids.slice(i, i + 100) }) }));
+              const chunk = ids.slice(i, i + 100);
+              const body = (await api("/promotion/v1/items/services/get", {
+                method: "POST",
+                body: JSON.stringify({ itemIds: chunk }),
+              })) as {
+                result?: { items?: { itemId?: number; services?: { slug?: string }[] }[] };
+                items?: { itemId?: number; services?: { slug?: string }[] }[];
+              };
+              const list = body.result?.items ?? body.items ?? [];
+              for (const it of list) {
+                const slugs = (it.services ?? []).map((s) => String(s.slug ?? "")).filter(Boolean);
+                if (it.itemId != null) attachedByItem[String(it.itemId)] = slugs;
+              }
             }
-            attached = parts.length === 1 ? parts[0] : parts;
+            for (const r of rows) {
+              if (!r.externalId) continue;
+              const slugs = attachedByItem[String(r.externalId)] ?? [];
+              if (!service.slug || !slugs.includes(service.slug)) {
+                verified = false;
+                break;
+              }
+            }
+            if (rows.some((r) => r.externalId && !(String(r.externalId) in attachedByItem))) {
+              verified = false;
+            }
           } catch (e) {
-            attached = { error: (e as Error).message.slice(0, 200) };
+            verified = false;
+            attachedByItem["__error"] = [(e as Error).message.slice(0, 200)];
           }
           return {
             ok: true,
-            verified: true,
+            verified,
             providerResponse,
-            readback: { op: op.kind, service: service.slug, serviceName: service.name, items: rows.map((r) => r.externalId), attached },
-            detail: `Авито: продвинуто ${rows.length} объявлений (${service.name ?? service.slug})`,
+            readback: {
+              op: op.kind,
+              service: service.slug,
+              serviceName: service.name,
+              items: rows.map((r) => r.externalId),
+              attachedByItem,
+            },
+            detail: verified
+              ? `Авито: продвинуто ${rows.length} объявлений (${service.name ?? service.slug}) · read-back OK`
+              : `Авито: продвижение отправлено, но read-back не подтвердил услугу «${service.slug}» на всех объявлениях`,
           };
         }
         case "create_campaign":
