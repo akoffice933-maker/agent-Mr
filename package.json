@@ -19,6 +19,7 @@
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
     "google-ads-api": "^24.1.0",
+    "ioredis": "^6.0.0",
     "next": "^16.3.2",
     "pg": "8.20.0",
     "react": "19.2.6",
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@pg-ts/pg-embedded-linux-x64-gnu": "^0.2.3",
     "@tailwindcss/postcss": "4.1.17",
+    "@types/ioredis-mock": "^8.2.8",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
@@ -35,6 +37,7 @@
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
+    "ioredis-mock": "^8.13.1",
     "pg-embedded": "^0.2.3",
     "postcss": "8.5.26",
     "tailwindcss": "4.1.17",

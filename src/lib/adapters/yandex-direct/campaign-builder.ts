@@ -31,6 +31,7 @@
 // structure (Title/Title2/Text/AdImageHash) so in-flight actions survive.
 
 import type { DirectApi } from "./api";
+import { fetchSafeImage } from "@/lib/net/fetch-safe";
 import { dailyRublesToWeeklyMicros, rublesToMicros } from "@/lib/money";
 import { buildUnifiedBiddingStrategy, type StrategyKey } from "./strategy";
 
@@ -315,14 +316,15 @@ export async function buildCampaignTree(api: DirectApi, p: BuildParams): Promise
       if (images.length) {
         // ── 4. Images (download → adimages.add → AdImageHashes) ─────────────
         step = "images";
+        // SSRF-safe fetch (Phase 0.3): http/https only, every resolved DNS
+        // address must be public (fail-closed), no redirects, strict
+        // Content-Type allowlist + 512 KB cap. The type/size re-checks below
+        // are defense-in-depth for the injectable fetchImage test seam.
         const doFetch =
           p.fetchImage ??
           (async (url: string) => {
-            const r = await fetch(url);
-            return {
-              base64: Buffer.from(await r.arrayBuffer()).toString("base64"),
-              contentType: r.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "",
-            };
+            const r = await fetchSafeImage(url, { maxBytes: MAX_IMAGE_BYTES });
+            return { base64: r.base64, contentType: r.contentType };
           });
         for (const img of images) {
           let base64: string;

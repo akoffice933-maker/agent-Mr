@@ -13,15 +13,18 @@ chmod +x "$PGBIN"/* 2>/dev/null || true
 chmod 700 "$PGDATA" 2>/dev/null || true
 
 # Recreate the empty subdirs postgres needs (the sandbox restore wipes them).
-for d in pg_notify pg_replslot pg_serial pg_snapshots pg_stat pg_stat_tmp \
-         pg_twophase pg_tblspc pg_logical/mappings pg_logical/snapshots \
-         pg_wal/archive_status pg_wal/summaries pg_multixact/members \
-         pg_multixact/offsets pg_subtrans pg_xact base/1 base/4 base/5 \
-         base/16384 global; do
+# NOTE: pg_commit_ts MUST be a directory (it's an SLRU); the sandbox wipes it
+# when empty, so recreate it as a dir, not a file (a file breaks boot with
+# 'could not open directory "pg_commit_ts": Not a directory').
+for d in pg_commit_ts pg_notify pg_replslot pg_serial pg_snapshots pg_stat \
+         pg_stat_tmp pg_twophase pg_tblspc pg_logical/mappings \
+         pg_logical/snapshots pg_wal/archive_status pg_wal/summaries \
+         pg_multixact/members pg_multixact/offsets pg_subtrans pg_xact \
+         base/1 base/4 base/5 base/16384 global; do
   mkdir -p "$PGDATA/$d"
 done
-# Empty files postgres needs (the sandbox restore wipes empty files too).
-touch "$PGDATA/pg_commit_ts" "$PGDATA/pg_logical/replorigin_snapshot" 2>/dev/null || true
+# Empty file postgres needs (the sandbox restore wipes empty files too).
+touch "$PGDATA/pg_logical/replorigin_snapshot" 2>/dev/null || true
 chmod 700 "$PGDATA"/pg_* 2>/dev/null || true
 
 if ! "$PGBIN/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1; then

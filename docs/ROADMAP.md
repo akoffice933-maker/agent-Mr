@@ -23,12 +23,22 @@
     детерминированный strategy-mapping (preview == provider), money-модуль
     (целочисленные micros, без float в деньгах), fail-closed RBAC
     (неизвестная роль → viewer, не admin).
+  - F (hardening, review 27.08): **SSRF-защита загрузки изображений**
+    (`fetchSafeImage`: только http/https, все резолвлённые DNS-адреса —
+    публичные, fail-closed, без редиректов, строгий Content-Type + 512 КБ,
+    опц. allowlist доменов); **кросс-инстанс rate limiting** (Redis/Upstash
+    sliding-window через `REDIS_URL`, fail-open на in-memory token bucket при
+    недоступном Redis); **lifecycle pending-действий** — TTL/истечение 48 ч
+    (`expires_at` + lazy sweep + отказ от истёкшего), капа открытых
+    pending на орг (20) с отказом новых writes, optimistic locking
+    (`version` bump на каждом переходе состояния).
 - **Адаптеры**: Яндекс.Директ — production-ready (OAuth + API v5 + Метрика,
   полный цикл создания кампании с read-back); Google Ads / Авито — sandbox.
 - **Клиенты**: Web UI · Telegram-бот · MCP-сервер — один REST API.
-- **Качество**: 91 тест (unit + интеграция: RLS-аудит, fail-closed,
-  execution pipeline, OAuth security), CI на реальном Postgres,
-  production build в CI, демо-видео и статичный демо-сайт.
+- **Качество**: 142 теста (unit + интеграция: RLS-аудит, fail-closed,
+  execution pipeline, OAuth security, fetch-safe/SSRF, rate limiting,
+  pending lifecycle), CI на реальном Postgres, production build в CI,
+  демо-видео и статичный демо-сайт.
 - **E2E-репетиция**: полный путь «запрос → preview → approve → создание
   (кампания/группа/объявление/ключи) → read-back → VERIFIED → зеркало + audit»
   прогнан вживую против симулятора Direct (нашёл и закрыл 2 бага:
@@ -47,14 +57,15 @@
 
 1. **Боевой supervised E2E по Директу** (ждёт заявку) — критерий
    «готово к закрытой beta».
-2. **Redis/Upstash rate limiting** (сейчас in-memory per-instance;
-   для multi-instance деплоя).
-3. **Нормальный OAuth onboarding** (wizard, статусы заявок, device flow).
-4. **Биллинг** (metering LLM-вызовов + actions; основа pricing).
-5. **Google Ads production** (бюджетные операции на стороне платформы)
+2. **Нормальный OAuth onboarding** (wizard, статусы заявок, device flow).
+3. **Биллинг** (metering LLM-вызовов + actions; основа pricing).
+4. **Google Ads production** (бюджетные операции на стороне платформы)
    и прод-прогон; **Авито production** (партнёрский доступ).
-6. **Multi-customer SaaS**: onboarding новой организации, роли через UI,
+5. **Multi-customer SaaS**: onboarding новой организации, роли через UI,
    приглашения участников.
+6. **Redis rate limiting в multi-instance деплое**: код готов
+   (sliding-window + fail-open, `REDIS_URL`); остаётся включить `REDIS_URL`
+   (Upstash) в боевом деплое и нагрузочный тест.
 
 ## Принципы (не ломаем)
 

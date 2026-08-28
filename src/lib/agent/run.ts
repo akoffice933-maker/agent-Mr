@@ -1,7 +1,7 @@
 // Agent core: intent (LLM → rules) → adapter sync → tool routing → safety layer → audit → chat persistence.
 
 import { createHash } from "crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db, currentTenant } from "@/db";
 import {
   accounts,
@@ -57,6 +57,67 @@ function orgId(): number {
 // Deterministic idempotency key for a pending action (E6).
 function idempotencyKey(tool: string, params: Record<string, unknown>, org: number): string {
   return createHash("sha256").update(`${org}:${tool}:${JSON.stringify(params)}`).digest("hex").slice(0, 32);
+}
+
+// Pending lifecycle (Phase 0.4/0.5/0.6, review 27.08.2026):
+//  * 0.5 — pending/failed actions expire after PENDING_TTL_MS (expires_at);
+//  * 0.6 — an org may have at most MAX_OPEN_PENDING open (pending) actions;
+//  * 0.4 — every lifecycle transition bumps `version` (optimistic lock).
+export const PENDING_TTL_MS = 48 * 3600 * 1000; // 48 h approval/retry window
+export const MAX_OPEN_PENDING = 20;
+
+/** Number of open (pending) actions for an org — the 0.6 gate. */
+export async function openPendingCount(org: number): Promise<number> {
+  const rows = await db
+    .select({ id: pendingActions.id })
+    .from(pendingActions)
+    .where(and(eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending")));
+  return rows.length;
+}
+
+/**
+ * Single source of truth for creating a pending action (used by runAgent and
+ * exercised directly by tests). 0.5: every pending gets an approval/retry
+ * window (expires_at = now + PENDING_TTL_MS) so stale actions are swept.
+ */
+export async function createPendingAction(args: {
+  org: number;
+  tool: string;
+  params: Record<string, unknown>;
+  preview: unknown;
+  costDaily: number;
+  source: string;
+}): Promise<{ id: number }> {
+  const row = await db
+    .insert(pendingActions)
+    .values({
+      organizationId: args.org,
+      tool: args.tool,
+      params: args.params,
+      preview: args.preview,
+      costDaily: args.costDaily,
+      idempotencyKey: idempotencyKey(args.tool, args.params, args.org),
+      status: "pending",
+      source: args.source,
+      // 0.5: approval/retry window.
+      expiresAt: new Date(Date.now() + PENDING_TTL_MS),
+    })
+    .returning();
+  return { id: row[0].id };
+}
+
+/**
+ * Sweep stale actions to 'expired' (lazy, idempotent, per-org). An action is
+ * stale when its expires_at (set at creation = now + TTL) is in the past.
+ * Failed actions stay retryable until the same instant, then expire.
+ */
+export async function sweepExpiredPending(org: number): Promise<number> {
+  const swept = await db
+    .update(pendingActions)
+    .set({ status: "expired", version: sql`${pendingActions.version} + 1` })
+    .where(and(eq(pendingActions.organizationId, org), inArray(pendingActions.status, ["pending", "failed"]), lt(pendingActions.expiresAt, new Date())))
+    .returning({ id: pendingActions.id });
+  return swept.length;
 }
 
 /** Risk context known before dispatch (from the parsed intent). */
@@ -203,24 +264,33 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
         if (costDaily > 0) {
           trace.push({ label: "Policy Engine: лимиты расхода (день/неделя/месяц) — запас есть", status: "ok" });
         }
-        const pending = (
-          await db
-            .insert(pendingActions)
-            .values({
-              organizationId: orgId(),
-              tool: intent.tool,
-              params: out.pending.params,
-              preview: result,
-              costDaily,
-              idempotencyKey: idempotencyKey(intent.tool, out.pending.params, orgId()),
-              status: "pending",
-              source: actor,
-            })
-            .returning()
-        )[0];
-        pendingId = pending.id;
-        result = { ...(result as Extract<ResultPayload, { kind: "preview" }>), pendingActionId: pending.id };
-        auditStatus = settings.dryRun ? "dry_run" : "pending";
+        // 0.5: sweep stale actions first (frees the open-pending budget).
+        const org = orgId();
+        await sweepExpiredPending(org);
+        // 0.6: per-org open-pending cap — a flooded approval queue is a
+        // safety smell (unreviewed actions piling up). Reject new writes
+        // until the user works through the queue.
+        const openCount = await openPendingCount(org);
+        if (openCount >= MAX_OPEN_PENDING) {
+          trace.push({ label: `Очередь подтверждений полна (${openCount}) — новые writes отклонены`, status: "warn" });
+          result = {
+            kind: "text",
+            text: `Очередь подтверждений полна (${openCount} открытых действий). Подтвердите или отклоните старые (в чате: «подтвердить N» / «отклонить N», в Telegram: /pending) — и повторите запрос.`,
+          };
+          auditStatus = "blocked";
+        } else {
+          const created = await createPendingAction({
+            org,
+            tool: intent.tool,
+            params: out.pending.params,
+            preview: result,
+            costDaily,
+            source: actor,
+          });
+          pendingId = created.id;
+          result = { ...(result as Extract<ResultPayload, { kind: "preview" }>), pendingActionId: created.id };
+          auditStatus = settings.dryRun ? "dry_run" : "pending";
+        }
       }
     } else {
       trace.push({ label: "Safety-слой: операция чтения, ограничения не применяются", status: "ok" });
@@ -348,6 +418,8 @@ export async function resolvePending(
   ctx?: TenantContext
 ) {
   const org = ctx?.orgId ?? orgId();
+  // 0.5: sweep stale actions before resolving (idempotent, per-org).
+  await sweepExpiredPending(org);
   // Tenant check (defense in depth on top of RLS): the action must belong to
   // the caller's organization. Knowing another org's action id grants nothing.
   const pending = (
@@ -358,6 +430,19 @@ export async function resolvePending(
   // retry RESUMES instead of duplicating — see campaign-builder.ts).
   if (!pending || (pending.status !== "pending" && pending.status !== "failed")) {
     // 404-equivalent: do not leak that another org's action exists.
+    if (pending?.status === "expired") {
+      return insertAgentMessage(
+        `Действие #${id} истекло (ждало подтверждения больше 48 ч) и закрыто. Отправьте запрос заново — оно будет создано как новое.`,
+        {
+          tool: "apply_pending",
+          toolLabel: pending.tool,
+          platforms: [],
+          trace: [{ label: `Pending-действие #${id} истекло (0.5 timeout)`, status: "warn" }],
+          durationMs: 60,
+          result: { kind: "text", text: "Действие истекло. Отправьте запрос заново." },
+        }
+      );
+    }
     return null;
   }
 
@@ -378,7 +463,7 @@ export async function resolvePending(
   }
 
   if (decision === "reject") {
-    const rej = await db.update(pendingActions).set({ status: "rejected" }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending"))).returning();
+    const rej = await db.update(pendingActions).set({ status: "rejected", version: sql`${pendingActions.version} + 1` }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending"))).returning();
     if (!rej.length) {
       return insertAgentMessage("Это действие уже обработано ранее — проверьте журнал аудита.", {
         tool: "apply_pending", toolLabel: "apply_pending", platforms: [],
@@ -404,7 +489,7 @@ export async function resolvePending(
   const costDaily = Number(pending.costDaily ?? 0);
   const approvalPolicy = await evaluatePolicy({ tool: pending.tool, isWrite: true, settings: await getSettings(), role: (ctx?.role as Role) ?? "admin", costDaily });
   if (approvalPolicy.action === "block") {
-    await db.update(pendingActions).set({ status: "rejected" }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending")));
+    await db.update(pendingActions).set({ status: "rejected", version: sql`${pendingActions.version} + 1` }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending")));
     await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "blocked", summary: `Отклонено при подтверждении #${id}: ${approvalPolicy.reason}` });
     return insertAgentMessage(`Не применил действие #${id}: ${approvalPolicy.reason}`, {
         tool: "apply_pending",
@@ -425,7 +510,7 @@ export async function resolvePending(
   // Idempotent transition (E6): only pending|failed may enter executing.
   const started = await db
     .update(pendingActions)
-    .set({ status: "executing", attempts: sql`${pendingActions.attempts} + 1`, executedAt: new Date(), lastError: null })
+    .set({ status: "executing", attempts: sql`${pendingActions.attempts} + 1`, executedAt: new Date(), lastError: null, version: sql`${pendingActions.version} + 1` })
     .where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), inArray(pendingActions.status, ["pending", "failed"])))
     .returning();
   if (!started.length) {
@@ -464,7 +549,7 @@ export async function resolvePending(
               .map((r) => `${r.kind === "campaign" ? "кампания" : r.kind === "adgroup" ? "группа" : r.kind === "ad" ? "объявление" : "ключ"} #${r.id}${r.name ? ` «${r.name}»` : ""}`)
               .join(", ")}. Сбой на шаге: ${partial.failedAt ?? "?"}. Повторное подтверждение ПРОДОЛЖИТ создание с места сбоя без дублей (идемпотентность по кореляционному тегу) — или попросите удалить созданные объекты (удаление созданной кампании).`
           : "";
-      await db.update(pendingActions).set({ status: "failed", lastError: errMsg, readback: bad?.readback ?? null, providerResponse: bad?.providerResponse ?? null }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org)));
+      await db.update(pendingActions).set({ status: "failed", lastError: errMsg, readback: bad?.readback ?? null, providerResponse: bad?.providerResponse ?? null, version: sql`${pendingActions.version} + 1` }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org)));
       await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "failed", summary: `Исполнение не подтверждено read-back: ${errMsg}${partial?.createdResources?.length ? ` · частичное создание: ${partial.createdResources.length} ресурс(а) на провайдере, сбой на шаге ${partial.failedAt ?? "?"}` : ""}` });
       return insertAgentMessage(`Действие #${id} не подтверждено провайдером: ${errMsg}.${partialNote} Локальное зеркало не менялось; повторное подтверждение запустит новую попытку (попытка ${pending.attempts + 1}).`, {
         tool: "apply_pending",
@@ -485,7 +570,7 @@ export async function resolvePending(
     const summary = await plan.applyLocal({ results: adapterResults });
     await db
       .update(pendingActions)
-      .set({ status: "verified", verifiedAt: new Date(), providerResponse, readback })
+      .set({ status: "verified", verifiedAt: new Date(), providerResponse, readback, version: sql`${pendingActions.version} + 1` })
       .where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "executing")));
     await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "verified", summary: `${summary} · read-back подтверждён` });
     const adapterDetail = adapterResults.map((r) => `${r.platform}[${r.mode}]: ${r.verified ? "read-back OK" : "mismatch"}`).join("; ");
@@ -507,7 +592,7 @@ export async function resolvePending(
 
   // No provider ops: apply locally and mark verified.
   const summary = await plan.applyLocal({ results: [] });
-  await db.update(pendingActions).set({ status: "verified", verifiedAt: new Date() }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "executing")));
+  await db.update(pendingActions).set({ status: "verified", verifiedAt: new Date(), version: sql`${pendingActions.version} + 1` }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "executing")));
   await writeAudit({ actor, tool: pending.tool, params, platforms: plan.platforms, dryRun: false, status: "verified", summary });
   return insertAgentMessage(`Выполнено: ${summary}. Записано в журнал аудита.`, {
     tool: "apply_pending", toolLabel: pending.tool, platforms: plan.platforms as Platform[],

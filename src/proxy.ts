@@ -18,12 +18,19 @@ import { getApiKey, isAuthRequired } from "@/lib/auth-policy";
 import { identityPool } from "@/lib/tenant/pool";
 import { resolveSessionContext } from "@/lib/tenant/resolve";
 import { TENANT_HEADERS } from "@/lib/tenant/request";
+import { getRateLimiter } from "@/lib/rate-limit";
 
 const g = globalThis as typeof globalThis & {
-  __rlBuckets?: Map<string, { tokens: number; ts: number }>;
   __userCache?: { at: number; has: boolean };
 };
-const buckets: Map<string, { tokens: number; ts: number }> = g.__rlBuckets ?? (g.__rlBuckets = new Map());
+
+// Cross-instance rate limiting (Phase 0.2): Redis/Upstash when REDIS_URL is
+// set, in-memory token bucket otherwise (and as fail-open fallback).
+async function allow(key: string, max: number): Promise<boolean> {
+  const limiter = await getRateLimiter();
+  const r = await limiter.check(key, max, 60_000);
+  return r.ok;
+}
 
 function isWriteRoute(req: NextRequest): boolean {
   return req.method === "POST" || req.method === "PUT" || req.method === "DELETE";
@@ -31,17 +38,6 @@ function isWriteRoute(req: NextRequest): boolean {
 
 function ipOf(req: NextRequest): string {
   return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? req.headers.get("x-real-ip") ?? "local";
-}
-
-function allow(key: string, max: number): boolean {
-  const now = Date.now();
-  const b = buckets.get(key) ?? { tokens: max, ts: now };
-  b.tokens = Math.min(max, b.tokens + ((now - b.ts) / 1000) * (max / 60));
-  b.ts = now;
-  const ok = b.tokens >= 1;
-  if (ok) b.tokens -= 1;
-  buckets.set(key, b);
-  return ok;
 }
 
 const uc = g.__userCache;
@@ -114,7 +110,7 @@ export async function proxy(req: NextRequest) {
           { status: 503 }
         );
       }
-      if (!allow(`${ip}:login`, 10)) {
+      if (!(await allow(`${ip}:login`, 10))) {
         return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": "60" } });
       }
     }
@@ -158,7 +154,7 @@ export async function proxy(req: NextRequest) {
   // General rate limits (applies in all modes).
   const write = isWriteRoute(req);
   const limit = write ? 20 : 120;
-  if (!allow(`${ip}:${write ? "w" : "r"}`, limit)) {
+  if (!(await allow(`${ip}:${write ? "w" : "r"}`, limit))) {
     return NextResponse.json(
       { error: "rate_limited", message: "Слишком много запросов — повторите через минуту." },
       { status: 429, headers: { "Retry-After": "60" } }

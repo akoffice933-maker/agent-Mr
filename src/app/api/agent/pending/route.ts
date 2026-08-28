@@ -3,6 +3,8 @@ import { desc } from "drizzle-orm";
 import { db } from "@/db";
 import { pendingActions } from "@/db/schema";
 import { withTenantRequest } from "@/lib/tenant/request";
+import { currentTenant } from "@/lib/tenant/pool";
+import { sweepExpiredPending } from "@/lib/agent/run";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +13,8 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   try {
     return await withTenantRequest(req, async () => {
+      // 0.5: sweep stale actions so the queue never lists expired items.
+      await sweepExpiredPending(currentTenant()?.orgId ?? 1);
       const rows = await db.select().from(pendingActions).orderBy(desc(pendingActions.id)).limit(20);
       const items = rows
         .filter((r) => r.status === "pending")
