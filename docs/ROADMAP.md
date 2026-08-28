@@ -1,6 +1,6 @@
 # Roadmap
 
-Честный статус и план развития agent-Mr (по состоянию на 25.08.2026).
+Честный статус и план развития agent-Mr (по состоянию на 28.08.2026).
 
 ## Готово и проверено
 
@@ -8,7 +8,7 @@
   session context; 13 команд tool layer.
 - **Safety-слой**: read-only по умолчанию, dry-run, лимиты дня/недели/месяца,
   обязательное подтверждение, re-check при подтверждении, audit-log.
-- **Production hardening (Phases A–E.1)**:
+- **Production hardening (Phases A–E.1 + F)**:
   - A: fail-closed API auth, Policy Engine, rate limiting, observability;
   - B: session-аутентификация (HttpOnly cookie, CSRF, brute-force lockout);
   - C: multi-tenancy — Postgres RLS (FORCE) на 13 таблицах, tenant-контекст
@@ -33,9 +33,11 @@
     pending на орг (20) с отказом новых writes, optimistic locking
     (`version` bump на каждом переходе состояния).
 - **Адаптеры**: Яндекс.Директ — production-ready (OAuth + API v5 + Метрика,
-  полный цикл создания кампании с read-back); Google Ads / Авито — sandbox.
+  полный цикл создания кампании с read-back); Google Ads / Авито — real API
+  (status/bids/negatives/delete + promote с read-back); create_campaign Google —
+  Phase 2 на ветке `phase12-google-avito-e1`.
 - **Клиенты**: Web UI · Telegram-бот · MCP-сервер — один REST API.
-- **Качество**: 142 теста (unit + интеграция: RLS-аудит, fail-closed,
+- **Качество**: 142+ теста (unit + интеграция: RLS-аудит, fail-closed,
   execution pipeline, OAuth security, fetch-safe/SSRF, rate limiting,
   pending lifecycle), CI на реальном Postgres, production build в CI,
   демо-видео и статичный демо-сайт.
@@ -75,3 +77,9 @@
 - **R4.** Credentials не живут в браузере.
 - **R5.** Никаких изменений на площадке без read-back VERIFIED;
   частичные результаты — с явным перечнем созданных объектов.
+
+## Phase 1 / 2 (in progress, branch `phase12-google-avito-e1`)
+
+- **docs/BETA.md** — closed supervised beta operator runbook
+- **Google create_campaign E.1** — campaign-builder (budget→campaign→adgroup→RSA→keywords) + extended simulator + CI tests
+- **Avito** — honest status/promote read-back (verified only when provider confirms)
