@@ -15,7 +15,7 @@
 // full execution pipeline proof without a real account.
 
 import { and, eq, inArray } from "drizzle-orm";
-import { db, currentTenant } from "@/db";
+import { db, currentTenant, tenantOrgId } from "@/db";
 import { campaigns, keywords } from "@/db/schema";
 import { getToken, storeToken, type StoredToken } from "../oauth-store";
 import { DirectApi, type YandexTransport } from "./api";
@@ -29,7 +29,7 @@ const PROD_BASE = "https://api.direct.yandex.com/json/v5";
 const SANDBOX_BASE = "https://api-sandbox.direct.yandex.com/json/v5";
 
 async function yandexToken(): Promise<string> {
-  const org = currentTenant()?.orgId ?? 1;
+  const org = tenantOrgId();
   const t = await getToken(org, "yandex");
   if (!t) throw new Error("Yandex token is missing or expired — reconnect the account");
   return t.accessToken;
@@ -78,7 +78,7 @@ async function yandexTokenGrant(grantType: string, params: Record<string, string
 export async function yandexExchangeCode(code: string): Promise<StoredToken> {
   const redirectUri = `${process.env.PUBLIC_URL ?? "http://localhost:3000"}/api/oauth/yandex`;
   const t = await yandexTokenGrant("authorization_code", { code, redirect_uri: redirectUri });
-  await storeToken(currentTenant()?.orgId ?? 1, "yandex", t);
+  await storeToken(tenantOrgId(), "yandex", t);
   return t;
 }
 
@@ -116,20 +116,23 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
     // 1. Campaigns
     const campRes = (await api.call("campaigns", "get", {
       SelectionCriteria: { States: ["ON", "SUSPENDED"] },
-      FieldNames: ["Id", "Name", "State", "Status", "Budget", "Type"],
+      // Field name/units contract with the rest of the adapter + builder:
+      // DailyBudget is the daily budget in RUBLES (number). The builder writes
+      // it as micros via WeeklySpendLimit; this mirror stores rubles.
+      FieldNames: ["Id", "Name", "State", "Status", "DailyBudget", "Type"],
       Page: { Limit: 4000, Offset: 0 },
     })) as { Campaigns?: Record<string, unknown>[] };
     for (const c of campRes.Campaigns ?? []) {
       const externalId = String(c.Id);
       const name = String(c.Name ?? externalId);
       const status = c.State === "SUSPENDED" ? "paused" : "active";
-      const budget = Number(c.Budget ?? 0);
+      const budget = Number(c.DailyBudget ?? 0);
       const existing = (await db.select().from(campaigns).where(and(eq(campaigns.platform, "yandex"), eq(campaigns.externalId, externalId))))[0];
       if (existing) {
         await db.update(campaigns).set({ name, status, budgetDaily: budget }).where(eq(campaigns.id, existing.id));
       } else {
         await db.insert(campaigns).values({
-          organizationId: currentTenant()?.orgId ?? 1,
+          organizationId: tenantOrgId(),
           platform: "yandex",
           kind: "campaign",
           externalId,
@@ -217,13 +220,16 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
         }
         case "campaign_budget": {
           const local = (await db.select().from(campaigns).where(eq(campaigns.id, op.campaignId)))[0];
-          const resp = await api.call("campaigns", "update", { Campaigns: [{ Id: Number(local.externalId), Budget: op.budgetDaily }] });
+          // DailyBudget (rubles) — matches the field the simulator/builder use
+          // and the units the mirror stores (budgetDaily).
+          const resp = await api.call("campaigns", "update", { Campaigns: [{ Id: Number(local.externalId), DailyBudget: op.budgetDaily }] });
           const results = (resp as any).UpdateResults as { Id?: number; Errors?: { Code: number; Message: string }[] }[];
           const errors = (results ?? []).flatMap((r) => r.Errors ?? []);
           if (errors.length) return fail(`Direct: ${errors.map((e) => `${e.Code}: ${e.Message}`).join("; ")}`, resp);
           const readback = await campaignStates([op.campaignId]);
-          const verified = readback.length > 0 && Math.abs(Number(readback[0].Budget ?? 0) - op.budgetDaily) < 0.01;
-          await db.update(campaigns).set({ budgetDaily: Number(readback[0]?.Budget ?? op.budgetDaily) }).where(eq(campaigns.id, op.campaignId));
+          const read = Number(readback[0]?.DailyBudget ?? 0);
+          const verified = readback.length > 0 && Math.abs(read - op.budgetDaily) < 0.01;
+          await db.update(campaigns).set({ budgetDaily: read || op.budgetDaily }).where(eq(campaigns.id, op.campaignId));
           return { ok: true, verified, providerResponse: resp, readback, detail: verified ? "read-back: бюджет подтверждён" : "read-back mismatch: бюджет не совпал" };
         }
         case "bids_factor": {
@@ -258,7 +264,7 @@ export function createYandexClient(opts: YandexClientOptions = {}): PlatformClie
               return fail("Direct: для создания объявления нужны заголовок (title/titles) и текст (text)");
             }
           }
-          const orgId = currentTenant()?.orgId ?? 1;
+          const orgId = tenantOrgId();
           const corrName = op.correlationId ? correlationName(orgId, op.correlationId, op.name) : op.name;
           const built = await buildCampaignTree(api, {
             correlationName: corrName,

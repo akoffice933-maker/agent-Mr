@@ -41,16 +41,10 @@ export const TOOL_LABEL: Record<string, string> = {
   fallback: "—",
 };
 
-export const WRITE_TOOLS = new Set([
-  "pause_low_ctr_campaigns",
-  "promote_low_view_listings",
-  "adjust_bids",
-  "create_campaign",
-  "delete_created_campaign",
-  "add_negative_keywords",
-  "apply_recommendation",
-  "set_campaign_status",
-]);
+// Single source of truth for the write/read classification and the RBAC action
+// class of every tool (src/lib/agent/tool-meta.ts). WRITE_TOOLS is re-exported
+// here for the existing call site in run.ts; prefer isWriteTool(tool) directly.
+export { WRITE_TOOLS, isWriteTool } from "./tool-meta";
 
 const PLATFORM_KEYWORDS: Record<Platform, RegExp> = {
   google: /google|гугл|адвордс|adwords|google\s?ads/,
@@ -267,9 +261,23 @@ export function parseIntent(raw: string): ParsedIntent {
     return {
       ...base,
       tool: "create_campaign",
-      platforms: platforms.length === 1 ? platforms : platforms.length === 0 ? ["google"] : platforms,
+      // Review L1 (decision: clarify): do NOT default to a platform. Creating a
+      // campaign needs an explicit platform — a missing one is handled downstream
+      // (createCampaign asks the user) instead of silently picking Google.
+      platforms,
       params,
     };
+  }
+
+  // 7b. Delete a (possibly partially) created campaign — saga compensation.
+  //     A forward-looking compensation request must name the campaign; the
+  //     name is taken from the ORIGINAL text (case-preserving). Without a
+  //     name we cannot compensate → fallback (the tool will ask for it).
+  if (/(удали|удалить|удали её|отмени|отменить|снеси|почисти)/.test(norm) && /(создан|создал|создана|создано|создани|создание)/.test(norm) && /(кампани)/.test(norm)) {
+    const quoted = raw.match(/«([^»]+)»/) ?? raw.match(/"([^"]+)"/) ?? raw.match(/'([^']+)'/);
+    const name = quoted?.[1]?.trim();
+    if (!name) return { ...base, tool: "fallback", params: {} };
+    return { ...base, tool: "delete_created_campaign", params: { name } };
   }
 
   // 8. Compare CPA
@@ -429,7 +437,8 @@ async function llmResolveIntent(text: string, ctx: SessionContext): Promise<Pars
       if (typeof args.text === "string") params.text = args.text;
       if (Array.isArray(args.keywords)) params.keywords = args.keywords.map(String).slice(0, 1000);
       if (Array.isArray(args.negative_keywords)) params.negativeKeywords = args.negative_keywords.map(String).slice(0, 100);
-      if (Array.isArray(args.region_ids)) params.regionIds = args.region_ids.map(Number);
+      if (Array.isArray(args.region_ids))
+        params.regionIds = args.region_ids.map(Number).filter((x) => Number.isFinite(x) && x > 0);
       // Phase E.2: responsive ad surface
       if (Array.isArray(args.titles) && args.titles.length) params.titles = args.titles.map(String).filter(Boolean).slice(0, 7);
       if (Array.isArray(args.callouts) && args.callouts.length) params.callouts = args.callouts.map(String).filter(Boolean).slice(0, 5);
@@ -440,6 +449,13 @@ async function llmResolveIntent(text: string, ctx: SessionContext): Promise<Pars
       if (Array.isArray(args.images) && args.images.length)
         params.images = (args.images as { url?: string; name?: string }[])
           .filter((x) => x && typeof x.url === "string" && /^https?:\/\//i.test(x.url)).slice(0, 5);
+      break;
+    case "delete_created_campaign":
+      // Saga compensation: requires the created campaign's name. A missing name
+      // is a misfire → let the rule parser try (it may capture a quoted name).
+      if (typeof args.name !== "string" || !args.name.trim()) return null;
+      params.name = args.name.trim();
+      if (typeof args.platform === "string" && VALID_PLATFORMS.includes(args.platform as Platform)) params.platform = args.platform;
       break;
     case "list_campaigns":
       params.status = ["all", "active", "paused"].includes(args.status as string) ? (args.status as string) : "all";

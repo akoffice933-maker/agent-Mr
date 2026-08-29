@@ -1,6 +1,6 @@
 // Encrypted OAuth token store (ТЗ 4.1: oauth_tokens, шифрование на уровне приложения).
 import { and, eq } from "drizzle-orm";
-import { db, currentTenant } from "@/db";
+import { db, currentTenant, tenantOrgId } from "@/db";
 import { accounts, oauthTokens } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/crypto";
 import type { Platform } from "@/lib/agent/types";
@@ -98,6 +98,6 @@ export async function setAccountMode(platform: Platform, mode: "sandbox" | "prod
 /** Production mode is available when the account is in production AND a (refreshable) token exists. */
 export async function isProduction(platform: Platform): Promise<boolean> {
   if ((await accountMode(platform)) !== "production") return false;
-  const org = currentTenant()?.orgId ?? 1;
+  const org = tenantOrgId();
   return Boolean(await getToken(org, platform));
 }

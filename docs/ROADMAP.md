@@ -35,7 +35,7 @@
 - **Адаптеры**: Яндекс.Директ — production-ready (OAuth + API v5 + Метрика,
   полный цикл создания кампании с read-back); Google Ads / Авито — sandbox.
 - **Клиенты**: Web UI · Telegram-бот · MCP-сервер — один REST API.
-- **Качество**: 142 теста (unit + интеграция: RLS-аудит, fail-closed,
+- **Качество**: 173 теста (unit + интеграция: RLS-аудит, fail-closed,
   execution pipeline, OAuth security, fetch-safe/SSRF, rate limiting,
   pending lifecycle), CI на реальном Postgres, production build в CI,
   демо-видео и статичный демо-сайт.

@@ -13,8 +13,9 @@
 //   block              — refused (read-only mode, RBAC deny, spend limit)
 import { checkBudgetHeadroom } from "./safety";
 import type { SafetySettings } from "./safety";
-import { authorize, isExecuteAction, type Action, type Role, type RiskContext } from "./rbac";
+import { authorize, isExecuteAction, type Role, type RiskContext } from "./rbac";
 import { hasScope, scopeForAction } from "./scopes";
+import { toolToAction } from "./tool-meta";
 
 export type PolicyDecision =
   | { action: "allow"; note?: string }
@@ -33,27 +34,9 @@ export interface PolicyInput {
   scopes?: string[] | null;
 }
 
-/** Map a unified tool to its RBAC action class. */
-export function toolToAction(tool: string): Action {
-  switch (tool) {
-    case "pause_low_ctr_campaigns":
-    case "set_campaign_status":
-      return "execute_campaign_status";
-    case "adjust_bids":
-      return "execute_bids";
-    case "create_campaign":
-    case "delete_created_campaign":
-    case "apply_recommendation":
-      return "execute_budget"; // conservative: recommendations can touch bids/budgets
-    case "promote_low_view_listings":
-      return "execute_promotion";
-    case "add_negative_keywords":
-      return "execute_negative";
-    default:
-      // reads, audit, recommendations listing, help
-      return "read";
-  }
-}
+// toolToAction is the single source of truth from src/lib/agent/tool-meta.ts
+// (re-exported for call sites that referenced the policy-local version).
+export { toolToAction };
 
 export async function evaluatePolicy(input: PolicyInput): Promise<PolicyDecision> {
   const { tool, isWrite, settings, costDaily = 0, role, risk, scopes = null } = input;

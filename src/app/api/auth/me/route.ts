@@ -24,7 +24,9 @@ export async function GET(req: Request) {
   const membership = (r as { rows: { org_id: number; role: string }[] }).rows[0];
   return NextResponse.json({
     authMode: "on",
-    user: { id: user.id, email: user.email, name: user.name ?? undefined, role: user.role },
+    // role is the EFFECTIVE per-org role (from org_members), never the legacy
+    // users.role column (dropped in migration 0008).
+    user: { id: user.id, email: user.email, name: user.name ?? undefined, role: membership?.role },
     org: membership ? { id: membership.org_id, role: membership.role } : undefined,
   });
 }

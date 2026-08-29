@@ -77,4 +77,17 @@ describe("createCampaign — E.2 responsive ad surface", () => {
     expect(p.titles).toBeUndefined();
     expect(p.images).toBeUndefined();
   });
+
+  it("clarifies (does not create) when the platform is not specified", async () => {
+    const out = await createCampaign({ ...intent({ name: "X", budget: 200 }), platforms: [] });
+    expect(out.pending).toBeUndefined();
+    expect((out.result as { kind: string }).kind).toBe("text");
+    expect((out.result as { text: string }).text).toMatch(/площадк/i);
+  });
+
+  it("clarifies (does not create) when the user named multiple platforms", async () => {
+    const out = await createCampaign({ ...intent({ name: "X", budget: 200 }), platforms: ["google", "yandex"] });
+    expect(out.pending).toBeUndefined();
+    expect((out.result as { kind: string }).kind).toBe("text");
+  });
 });

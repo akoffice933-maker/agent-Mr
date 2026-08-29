@@ -18,7 +18,6 @@ const base: SafetySettings = {
   dailyLimit: 50000,
   weeklyLimit: 250000,
   monthlyLimit: 900000,
-  confirmBudget: true,
 };
 
 beforeEach(() => {

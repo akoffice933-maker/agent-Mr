@@ -2,7 +2,7 @@
 
 import { createHash } from "crypto";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
-import { db, currentTenant } from "@/db";
+import { db, currentTenant, tenantOrgId } from "@/db";
 import {
   accounts,
   campaigns,
@@ -51,7 +51,7 @@ const TOOL_DESC: Record<string, string> = {
 };
 
 function orgId(): number {
-  return currentTenant()?.orgId ?? 1;
+  return tenantOrgId();
 }
 
 // Deterministic idempotency key for a pending action (E6).

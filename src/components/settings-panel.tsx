@@ -18,7 +18,6 @@ interface SettingsState {
   dailyLimit: number;
   weeklyLimit: number;
   monthlyLimit: number;
-  confirmBudget: boolean;
   platforms?: PlatformState[];
 }
 
@@ -114,15 +113,13 @@ export function SettingsPanel() {
           label="Dry-run по умолчанию"
           desc="Все операции записи выполняются как предпросмотр: изменения применяются только после явного подтверждения."
         />
-        <Toggle
-          on={s.confirmBudget}
-          onChange={(v) => {
-            patch({ confirmBudget: v });
-            apiFetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmBudget: v }) });
-          }}
-          label="Подтверждение действий, влияющих на бюджет"
-          desc="Обязательное подтверждение до применения ставок, бюджетов и продвижения (требование ТЗ, разд. 10)."
-        />
+        <div className="rounded-lg border border-line p-4">
+          <div className="text-sm font-medium text-fg">Подтверждение действий, влияющих на бюджет</div>
+          <p className="mt-1 text-xs text-muted">
+            Все операции записи (ставки, бюджеты, продвижение, пауза/запуск) всегда требуют явного подтверждения
+            человеком — независимо от роли и настроек (требование ТЗ, разд. 10).
+          </p>
+        </div>
         <Toggle
           on={s.readOnly}
           onChange={(v) => {

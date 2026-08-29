@@ -174,11 +174,9 @@ export const users = pgTable("users", {
   email: text("email").notNull(),
   passwordHash: text("password_hash").notNull(), // scrypt$N$r$p$salt$hash
   name: text("name"),
-  // DEPRECATED (E.1): kept for backward compatibility only. The effective role
-  // is ALWAYS org_members.role (per-tenant membership) — see
-  // resolveSessionContext. Never read this column for authorization; a future
-  // migration will drop it.
-  role: text("role").notNull().default("admin"),
+  // The effective role is ALWAYS org_members.role (per-tenant membership) — see
+  // resolveSessionContext. The legacy `users.role` column was dropped in
+  // migration 0008; it was never read for authorization.
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -40,9 +40,13 @@ async function main() {
     if (!Number.isInteger(orgId) || orgId < 1) throw new Error("Invalid --org");
     const key = `amr_${randomBytes(32).toString("hex")}`;
     const scopesRaw = scopesArg; // snapshot into a const so TS can narrow it below
-    const scopes = scopesRaw == null ? null : normalizeScopes(scopesRaw.split(",").map((x) => x.trim()));
+    // Review L2 (decision: default read-only): a NEW key with no explicit
+    // --scopes gets READ-ONLY, never "unrestricted". Write capabilities require
+    // an explicit --scopes. Existing keys in the DB keep their NULL (unrestricted
+    // legacy) value for backward compatibility.
+    const scopes = scopesRaw == null ? ["read"] : normalizeScopes(scopesRaw.split(",").map((x) => x.trim()));
     if (scopesRaw != null && scopes === null) throw new Error("Invalid scopes");
-    const requested = scopesRaw == null ? null : scopes!;
+    const requested = scopesRaw == null ? ["read"] : scopes!;
     if (scopesRaw != null && requested && requested.length !== scopesRaw.split(",").map((x) => x.trim()).filter(Boolean).length) {
       throw new Error(`Unknown scope. Allowed: ${MACHINE_SCOPES.join(", ")}`);
     }
@@ -54,7 +58,7 @@ async function main() {
       expiresAt,
       scopes: requested,
     });
-    console.log(`✓ API key created (${name}${ttl ? `, expires in ${ttl}` : ", no expiration"}${requested ? `, scopes: ${requested.join(",")}` : ", unrestricted legacy scope"}). Shown once — store it now:`);
+    console.log(`✓ API key created (${name}${ttl ? `, expires in ${ttl}` : ", no expiration"}, scopes: ${requested.join(",")}). Shown once — store it now:`);
     console.log(`  ${key}`);
   } else if (cmd === "list") {
     const rows = await db.select().from(apiKeys).orderBy(apiKeys.id);

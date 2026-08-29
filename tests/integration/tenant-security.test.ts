@@ -135,8 +135,12 @@ describe("role source of truth (org_members, not users.role)", () => {
     const stamp = Date.now();
     const org = (await identityPool.query(`INSERT INTO organizations (name) VALUES ($1) RETURNING id`, [`E1 role ${stamp}`])) as any;
     const orgId = org.rows[0].id as number;
+    // Note: users.role column was dropped (migration 0008); role now lives ONLY
+    // in org_members. This test sets users.email/password and then puts the
+    // (contrasting) role in org_members — asserting that the membership role is
+    // the one that wins, with no legacy column to disagree.
     const user = (await identityPool.query(
-      `INSERT INTO users (email, password_hash, role) VALUES ($1, 'h', 'admin') RETURNING id`,
+      `INSERT INTO users (email, password_hash) VALUES ($1, 'h') RETURNING id`,
       [`e1-role-${stamp}@test.local`]
     )) as any;
     const userId = user.rows[0].id as number;

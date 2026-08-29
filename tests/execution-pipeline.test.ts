@@ -220,3 +220,58 @@ describe("Phase E: execution pipeline (write → read-back → verified)", () =>
     });
   });
 });
+
+describe("Phase E: additional WriteOps — budget, negative keywords, delete_campaign_tree", () => {
+  it("campaign_budget: write → read-back (DailyBudget) → VERIFIED, mirror synced", async () => {
+    await withTenant(ctx, async () => {
+      const sim = createSimulator({ campaigns: freshSimCampaigns() });
+      const client = clientWith(sim);
+      const res = await client.execute({ kind: "campaign_budget", campaignId: localA, budgetDaily: 1500 });
+      expect(res.ok).toBe(true);
+      expect(res.verified).toBe(true);
+      // The simulator (provider truth) must now hold the new DailyBudget.
+      expect(sim.state.campaigns.find((c) => c.Id === 100)?.DailyBudget).toBe(1500);
+      // The local mirror must be synced to the read-back value.
+      const row = (await db.select().from(campaigns).where(eq(campaigns.id, localA)))[0];
+      expect(row?.budgetDaily).toBe(1500);
+    });
+  });
+
+  it("negative_keywords: add → read-back → VERIFIED when present", async () => {
+    await withTenant(ctx, async () => {
+      const sim = createSimulator({ campaigns: freshSimCampaigns() });
+      const client = clientWith(sim);
+      const res = await client.execute({ kind: "negative_keywords", campaignId: localA, words: ["бесплатно", "работа"] });
+      expect(res.ok).toBe(true);
+      expect(res.verified).toBe(true);
+      expect(res.readback).toBeTruthy();
+      expect(sim.state.negatives.some((n) => n.CampaignId === 100 && n.Keyword === "бесплатно")).toBe(true);
+    });
+  });
+
+  it("delete_campaign_tree: compensates a (partial) create — read-back empty → VERIFIED", async () => {
+    await withTenant(ctx, async () => {
+      const sim = createSimulator({ campaigns: freshSimCampaigns() });
+      const client = clientWith(sim);
+      const res = await client.execute({ kind: "delete_campaign_tree", campaignId: localA });
+      expect(res.ok).toBe(true);
+      expect(res.verified).toBe(true);
+      expect(sim.state.campaigns.find((c) => c.Id === 100)).toBeUndefined();
+    });
+  });
+
+  it("delete_campaign_tree: missing local externalId → fails (nothing to delete)", async () => {
+    await withTenant(ctx, async () => {
+      const sim = createSimulator({ campaigns: freshSimCampaigns() });
+      const client = clientWith(sim);
+      // Insert a mirror row with no external id (e.g. an unsynced campaign).
+      const orphan = (
+        await db.insert(campaigns).values({ organizationId: 1, platform: "yandex", kind: "campaign", externalId: "", name: "NoExt", status: "active", budgetDaily: 0, strategy: "test" }).returning()
+      )[0];
+      const res = await client.execute({ kind: "delete_campaign_tree", campaignId: orphan.id });
+      expect(res.ok).toBe(false);
+      expect(res.verified).toBe(false);
+      await db.delete(campaigns).where(eq(campaigns.id, orphan.id));
+    });
+  });
+});

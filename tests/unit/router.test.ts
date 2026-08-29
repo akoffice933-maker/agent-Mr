@@ -257,3 +257,28 @@ describe("create_campaign — full ad-tree spec (E2E runbook grammar)", () => {
     expect(i.params.words).toContain("бесплатно");
   });
 });
+
+describe("delete_created_campaign — saga compensation (phase E.1)", () => {
+  it("удалить созданную кампанию по названию в кавычках (регистр сохраняется)", () => {
+    const i = parseIntent("Удали созданную кампанию «AgentMr E2E Test»");
+    expect(i.tool).toBe("delete_created_campaign");
+    expect(i.params.name).toBe("AgentMr E2E Test");
+  });
+
+  it("удалить созданную кампанию — без названия уходит в fallback (не падает)", () => {
+    const i = parseIntent("Удали созданную кампанию");
+    expect(i.tool).toBe("fallback");
+  });
+
+  it("create_campaign без платформы не подставляет google по умолчанию (уточнение снизу)", () => {
+    const i = parseIntent("Создай кампанию «Тест» с бюджетом 100");
+    expect(i.tool).toBe("create_campaign");
+    expect(i.platforms).toEqual([]);
+  });
+
+  it("«отменить создание кампании» — компенсация, а не пауза/создание", () => {
+    const i = parseIntent("Отмени создание кампании «Диваны на заказ»");
+    expect(i.tool).toBe("delete_created_campaign");
+    expect(i.params.name).toBe("Диваны на заказ");
+  });
+});

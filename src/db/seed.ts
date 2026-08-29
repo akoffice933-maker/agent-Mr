@@ -282,7 +282,6 @@ async function runSeed() {
     { organizationId: ORG, key: "daily_limit", value: 50000 },
     { organizationId: ORG, key: "weekly_limit", value: 250000 },
     { organizationId: ORG, key: "monthly_limit", value: 900000 },
-    { organizationId: ORG, key: "confirm_budget", value: true },
   ]);
 
   console.log("→ Audit-log и приветствие...");

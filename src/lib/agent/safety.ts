@@ -3,7 +3,7 @@
 // to the current organization (src/lib/tenant/pool.ts).
 
 import { eq, sql } from "drizzle-orm";
-import { db, currentTenant } from "@/db";
+import { db, currentTenant, tenantOrgId } from "@/db";
 import { auditLog, metricsDaily, settings } from "@/db/schema";
 import { dateNDaysAgo } from "@/lib/format";
 
@@ -13,7 +13,6 @@ export interface SafetySettings {
   dailyLimit: number;
   weeklyLimit: number;
   monthlyLimit: number;
-  confirmBudget: boolean;
 }
 
 const DEFAULTS: SafetySettings = {
@@ -22,7 +21,6 @@ const DEFAULTS: SafetySettings = {
   dailyLimit: 50000,
   weeklyLimit: 250000,
   monthlyLimit: 900000,
-  confirmBudget: true,
 };
 
 export async function getSettings(): Promise<SafetySettings> {
@@ -34,7 +32,6 @@ export async function getSettings(): Promise<SafetySettings> {
     dailyLimit: Number(map.get("daily_limit") ?? DEFAULTS.dailyLimit),
     weeklyLimit: Number(map.get("weekly_limit") ?? DEFAULTS.weeklyLimit),
     monthlyLimit: Number(map.get("monthly_limit") ?? DEFAULTS.monthlyLimit),
-    confirmBudget: map.get("confirm_budget") !== false,
   };
 }
 
@@ -45,8 +42,7 @@ export async function updateSettings(patch: Partial<SafetySettings>): Promise<Sa
   if (patch.dailyLimit !== undefined) entries.push(["daily_limit", patch.dailyLimit]);
   if (patch.weeklyLimit !== undefined) entries.push(["weekly_limit", patch.weeklyLimit]);
   if (patch.monthlyLimit !== undefined) entries.push(["monthly_limit", patch.monthlyLimit]);
-  if (patch.confirmBudget !== undefined) entries.push(["confirm_budget", patch.confirmBudget]);
-  const org = currentTenant()?.orgId ?? 1;
+  const org = tenantOrgId();
   for (const [key, value] of entries) {
     await db
       .insert(settings)
@@ -122,7 +118,7 @@ export interface AuditEntry {
 
 export async function writeAudit(e: AuditEntry): Promise<void> {
   await db.insert(auditLog).values({
-    organizationId: currentTenant()?.orgId ?? 1,
+    organizationId: tenantOrgId(),
     actor: e.actor,
     tool: e.tool,
     params: (e.params ?? {}) as Record<string, unknown>,

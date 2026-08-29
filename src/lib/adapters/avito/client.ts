@@ -25,7 +25,7 @@
 // failure here returns a structured error with the provider message (E.1 rule).
 
 import { and, eq, inArray } from "drizzle-orm";
-import { db, currentTenant } from "@/db";
+import { db, currentTenant, tenantOrgId } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
 import type { DailyMetric, PlatformClient, ExecutionResult, WriteOp } from "../types";
@@ -43,13 +43,28 @@ function clientSecret(): string {
   return v;
 }
 
+// Review M2: a hanging provider must not hold the request open forever.
+const HTTP_TIMEOUT_MS = 15_000;
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (e) {
+    throw (e as Error)?.name === "AbortError" ? new Error(`Avito timeout after ${HTTP_TIMEOUT_MS}ms (${url})`) : e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function avitoFetchToken(): Promise<StoredToken> {
   const q = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: clientId(),
     client_secret: clientSecret(),
   });
-  const res = await fetch(`${BASE}/token?${q.toString()}`, { method: "POST" });
+  const res = await fetchWithTimeout(`${BASE}/token?${q.toString()}`, { method: "POST" });
   if (!res.ok) throw new Error(`Avito token error ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const d = (await res.json()) as { access_token?: string; token_type?: string; expires_in?: number };
   if (!d.access_token) throw new Error(`Avito token error: access_token missing in response`);
@@ -58,7 +73,7 @@ export async function avitoFetchToken(): Promise<StoredToken> {
     expiresAt: new Date(Date.now() + (d.expires_in ?? 24 * 3600) * 1000),
     extra: { grant: "client_credentials" },
   };
-  await storeToken(currentTenant()?.orgId ?? 1, "avito", t);
+  await storeToken(tenantOrgId(), "avito", t);
   return t;
 }
 
@@ -69,9 +84,9 @@ async function refreshAvito(_current: StoredToken | null): Promise<StoredToken> 
 registerRefresher("avito", refreshAvito);
 
 async function api(path: string, init?: RequestInit): Promise<unknown> {
-  const t = await getToken(currentTenant()?.orgId ?? 1, "avito");
+  const t = await getToken(tenantOrgId(), "avito");
   if (!t) throw new Error("Avito token is missing or expired — run the connect (avitoFetchToken)");
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${t.accessToken}`, "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
@@ -82,20 +97,25 @@ async function api(path: string, init?: RequestInit): Promise<unknown> {
   return res.json();
 }
 
-/** Account owner id: AVITO_USER_ID env (explicit) or resolved via /accounts/self. */
-let cachedUserId: string | null = null;
+/** Account owner id, cached PER TENANT (review L1): AVITO_USER_ID env (explicit)
+ *  or resolved via /accounts/self. A module-level single cache would let the
+ *  first org's id leak across organizations in a multi-tenant deployment. */
+const cachedUserIds = new Map<number, string>();
 async function userId(): Promise<string> {
-  if (cachedUserId) return cachedUserId;
+  const org = tenantOrgId();
+  const cached = cachedUserIds.get(org);
+  if (cached) return cached;
   const fromEnv = process.env.AVITO_USER_ID;
   if (fromEnv) {
-    cachedUserId = fromEnv;
+    cachedUserIds.set(org, fromEnv);
     return fromEnv;
   }
   const self = (await api("/core/v1/accounts/self")) as Record<string, unknown>;
   const id = self.id ?? self.userId;
   if (id == null) throw new Error("Avito: /accounts/self did not return a user id");
-  cachedUserId = String(id);
-  return cachedUserId;
+  const resolved = String(id);
+  cachedUserIds.set(org, resolved);
+  return resolved;
 }
 
 const STATUS_MAP: Record<string, "active" | "paused"> = {
@@ -116,7 +136,7 @@ async function upsertListing(adv: Record<string, unknown>): Promise<void> {
   if (existing) {
     await db.update(campaigns).set({ name, status, price }).where(eq(campaigns.id, existing.id));
   } else {
-    await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "avito", kind: "listing", externalId, name, status, price, strategy: "Avito" });
+    await db.insert(campaigns).values({ organizationId: tenantOrgId(), platform: "avito", kind: "listing", externalId, name, status, price, strategy: "Avito" });
   }
 }
 

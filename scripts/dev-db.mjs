@@ -33,6 +33,12 @@ const APP_URL = "postgresql://appuser:apppass@127.0.0.1:5432/app_db";
 
 const HBA = DATA_DIR + "/pg_hba.conf";
 const hbaTo = (mode) => {
+  // Review H1 (overview): on a CLEAN bootstrap the cluster does not exist yet,
+  // so pg_hba.conf is absent. Attempting to read it before initdb crashed the
+  // script with ENOENT. Guard: if the file is not there yet, there is nothing
+  // to patch — initdb (via postgres.start()) will create it with the auth we
+  // pass (trust for the bootstrap window). Once it exists, flip as needed.
+  if (!fs.existsSync(HBA)) return;
   const before = fs.readFileSync(HBA, "utf8");
   const after = mode === "trust" ? before.replace(/\bpassword(?=\s*$)/gm, "trust") : before.replace(/\btrust(?=\s*$)/gm, "password");
   if (before !== after) fs.writeFileSync(HBA, after);
@@ -51,16 +57,23 @@ const postgres = new PostgresInstance({
 // 0b) Self-heal: snapshot restore also drops EMPTY directories the cluster
 // needs (pg_notify, pg_stat_tmp, ...) — without them postgres dies at startup
 // with "could not open directory". Recreate the standard set (idempotent).
+//
+// Review H1 (overview): this must run ONLY on an ALREADY-INITIALIZED cluster
+// (PG_VERSION present). On a BRAND-NEW data dir it would pre-create those
+// subdirectories BEFORE initdb runs, making initdb fail with
+// "directory exists but is not empty". initdb creates the directories itself.
 try {
-  const stdDirs = [
-    "pg_commit_ts", "pg_dynshmem", "pg_logical/mappings", "pg_logical/replorigin_snapshot",
-    "pg_logical/snapshots", "pg_notify", "pg_replslot", "pg_serial", "pg_snapshots",
-    "pg_stat", "pg_stat_tmp", "pg_subtrans", "pg_tblspc", "pg_twophase",
-  ];
-  for (const d of stdDirs) {
-    const p = DATA_DIR + "/" + d;
-    if (!fs.existsSync(p)) {
-      fs.mkdirSync(p, { recursive: true, mode: 0o700 });
+  if (fs.existsSync(DATA_DIR + "/PG_VERSION")) {
+    const stdDirs = [
+      "pg_commit_ts", "pg_dynshmem", "pg_logical/mappings", "pg_logical/replorigin_snapshot",
+      "pg_logical/snapshots", "pg_notify", "pg_replslot", "pg_serial", "pg_snapshots",
+      "pg_stat", "pg_stat_tmp", "pg_subtrans", "pg_tblspc", "pg_twophase",
+    ];
+    for (const d of stdDirs) {
+      const p = DATA_DIR + "/" + d;
+      if (!fs.existsSync(p)) {
+        fs.mkdirSync(p, { recursive: true, mode: 0o700 });
+      }
     }
   }
 } catch {}
@@ -111,6 +124,22 @@ if (await portUp()) {
   } catch {}
   await postgres.start();
 }
+// Reload pg_hba without a DB connection (SIGHUP the postmaster from
+// postmaster.pid). Needed because the trust flip for a FRESH cluster happens
+// after initdb, and reloading requires auth we don't have yet.
+const reloadConfig = async () => {
+  try {
+    const pid = Number(fs.readFileSync(DATA_DIR + "/postmaster.pid", "utf8").split("\n")[0]);
+    if (Number.isInteger(pid) && pid > 0) process.kill(pid, "SIGHUP");
+  } catch {}
+};
+
+// Ensure trust is active for the bootstrap superuser connection. On a fresh
+// cluster initdb wrote `password` auth; the early hbaTo("trust") above was a
+// no-op (file missing), so flip it now that pg_hba exists, then reload.
+hbaTo("trust");
+await reloadConfig();
+
 // Readiness = a real SQL connection (isHealthy() only knows instances this
 // process started).
 const sqlReady = async () => {
@@ -141,18 +170,22 @@ try {
   // isolation. appuser is a plain role that OWNS the database and its
   // tables, exactly like the original sandbox setup (postgres is the
   // superuser; appuser is the owner subject to FORCE RLS).
+  // CREATE ROLE via a DO block (safe in a transaction).
   await admin.query(`DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'appuser') THEN
       CREATE ROLE appuser LOGIN PASSWORD 'apppass';
     ELSE
       ALTER ROLE appuser WITH LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'apppass';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'app_db') THEN
-      CREATE DATABASE "app_db" OWNER appuser;
-    ELSE
-      ALTER DATABASE "app_db" OWNER TO appuser;
-    END IF;
   END $$;`);
+  // CREATE DATABASE cannot run inside a transaction/DO block, so it is executed
+  // as its own top-level statement (idempotent: skips if already present).
+  const dbExists = await admin.query("SELECT 1 FROM pg_database WHERE datname = 'app_db'");
+  if (dbExists.rows.length === 0) {
+    await admin.query(`CREATE DATABASE "app_db" OWNER appuser`);
+  } else {
+    await admin.query(`ALTER DATABASE "app_db" OWNER TO appuser`);
+  }
   await admin.query(`GRANT ALL PRIVILEGES ON DATABASE "app_db" TO appuser`);
   console.log("bootstrap: appuser role (non-superuser owner) + app_db OK");
 } finally {

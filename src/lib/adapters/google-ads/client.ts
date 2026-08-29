@@ -20,7 +20,7 @@
 // GOOGLE_ADS_CUSTOMER_ID (10 digits, no dashes).
 
 import { and, eq, inArray } from "drizzle-orm";
-import { db, currentTenant } from "@/db";
+import { db, currentTenant, tenantOrgId } from "@/db";
 import { campaigns, keywords, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
 import type { DailyMetric, PlatformClient, ExecutionResult, WriteOp } from "../types";
@@ -105,7 +105,7 @@ async function requestToken(grantType: "authorization_code" | "refresh_token", p
 
 export async function googleExchangeCode(code: string): Promise<StoredToken> {
   const t = await requestToken("authorization_code", { code, redirect_uri: redirectUri() });
-  await storeToken(currentTenant()?.orgId ?? 1, "google", t);
+  await storeToken(tenantOrgId(), "google", t);
   return t;
 }
 
@@ -174,7 +174,7 @@ async function upsertMetric(campaignId: number, m: DailyMetric): Promise<void> {
 export function createGoogleClient(opts?: { makeCustomer?: () => Promise<GoogleAdsCustomerLike> }): PlatformClient {
   const makeCustomer = opts?.makeCustomer ?? (async () => {
     const lib = await loadLib();
-    const t = await getToken(currentTenant()?.orgId ?? 1, "google");
+    const t = await getToken(tenantOrgId(), "google");
     if (!t?.refreshToken) throw new Error("Google refresh token is missing — reconnect the account via /safety → Google Ads");
     return (cachedApi ??= new lib.GoogleAdsApi({ client_id: clientId(), client_secret: clientSecret(), developer_token: developerToken() })).Customer({
       customer_id: customerId(),
@@ -206,7 +206,7 @@ export function createGoogleClient(opts?: { makeCustomer?: () => Promise<GoogleA
           idMap.set(externalId, existing.id);
         } else {
           const created = (
-            await db.insert(campaigns).values({ organizationId: currentTenant()?.orgId ?? 1, platform: "google", kind: "campaign", externalId, name, status, budgetDaily: budget, strategy: "Google Ads" }).returning()
+            await db.insert(campaigns).values({ organizationId: tenantOrgId(), platform: "google", kind: "campaign", externalId, name, status, budgetDaily: budget, strategy: "Google Ads" }).returning()
           )[0];
           idMap.set(externalId, created.id);
         }
@@ -426,7 +426,7 @@ export function createGoogleClient(opts?: { makeCustomer?: () => Promise<GoogleA
         }
         case "create_campaign": {
           // Phase 2.1: full tree builder with correlation adoption + read-back.
-          const org = currentTenant()?.orgId ?? 1;
+          const org = tenantOrgId();
           const actionId = op.correlationId ?? 0;
           const correlationName = `${op.name} · agentmr:${org}:${actionId}`.slice(0, 255);
           const headlines = (op.titles && op.titles.length ? op.titles : op.title ? [String(op.title)] : [])
@@ -465,11 +465,16 @@ export function createGoogleClient(opts?: { makeCustomer?: () => Promise<GoogleA
           };
         }
         case "campaign_budget": {
+          // NOT yet implemented in the Google Ads adapter. Returning ok:true /
+          // verified:true here would let the run loop apply the local mirror and
+          // mark the pending action VERIFIED while the real Google budget is
+          // unchanged — a silent divergence between audit and reality.
+          // Fail closed: report clearly so the action is NOT verified.
           return {
-            ok: true,
-            verified: true,
+            ok: false,
+            verified: false,
             readback: { op: op.kind, sandbox: false },
-            detail: "Google Ads: campaign_budget — follow-up (mutate budget resource)",
+            detail: "Google Ads: campaign_budget — реализация отложена (mutate campaign_budget resource). Действие не подтверждено.",
           };
         }
         case "promote_listings": {

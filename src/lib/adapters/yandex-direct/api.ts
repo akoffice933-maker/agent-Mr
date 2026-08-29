@@ -83,15 +83,29 @@ export class DirectApi {
   private httpTransport(): YandexTransport {
     return async (service, method, params) => {
       const token = await this.token();
-      const res = await this.fetchImpl(`${this.baseUrl}/${service}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ method, params }),
-      });
+      // Review M2: a hanging provider must not hold the request open forever.
+      // 15s per attempt (retries above still apply).
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      let res: Response;
+      try {
+        res = await this.fetchImpl(`${this.baseUrl}/${service}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ method, params }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        // Abort errors are transient-ish (may be a slow network) — let the
+        // caller's retry loop decide; surface as an Error with no status.
+        throw (e as Error)?.name === "AbortError" ? new Error(`Direct HTTP timeout after 15s (${service}/${method})`) : e;
+      } finally {
+        clearTimeout(timeout);
+      }
       const status = res.status;
       const text = await res.text();
       if (!res.ok) {

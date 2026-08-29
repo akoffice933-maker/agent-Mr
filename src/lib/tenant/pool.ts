@@ -17,6 +17,7 @@
 import { AsyncLocalStorage } from "async_hooks";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
+import { isProductionMode } from "@/lib/auth-policy";
 
 // Test hook: integration tests run against DATABASE_TEST_URL (the plain
 // DATABASE_URL in unit tests is a dummy for module loading only).
@@ -50,6 +51,26 @@ const als = new AsyncLocalStorage<Store>();
 export function currentTenant(): TenantContext | null {
   const s = als.getStore();
   return s ? { orgId: s.orgId, userId: s.userId, role: s.role, scopes: s.scopes } : null;
+}
+
+/**
+ * Tenant org id with the project's fail-closed invariant made explicit (review
+ * L3, decision: fail-closed in production).
+ *
+ * The old pattern `tenantOrgId()` silently fell back to org 1
+ * whenever the tenant context was lost — a data-leak-across-tenants smell in a
+ * multi-tenant SaaS, and a contradiction of the documented "without a context
+ * → 0 rows" fail-closed design. In production we now THROW instead of guessing
+ * org 1. In dev/sandbox (auth off, single default tenant) the fallback stays so
+ * the demo keeps working.
+ */
+export function tenantOrgId(): number {
+  const org = currentTenant()?.orgId;
+  if (org != null && org > 0) return org;
+  if (isProductionMode()) {
+    throw new Error("Tenant context missing (orgId) in production — refusing to fall back to org 1");
+  }
+  return 1;
 }
 
 function contextClient(): PoolClientLike | null {

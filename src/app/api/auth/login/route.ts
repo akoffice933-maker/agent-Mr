@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getUserByEmail } from "@/lib/auth/sessions";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { sessionCookie } from "@/lib/auth/cookies";
+import { identityPool } from "@/lib/tenant/pool";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -37,7 +38,12 @@ export async function POST(req: Request) {
   recordLoginSuccess(ip);
 
   const session = await createSession(user.id, ip, req.headers.get("user-agent") ?? undefined);
-  const res = NextResponse.json({ ok: true, user: { id: user.id, email: user.email, name: user.name ?? undefined, role: user.role } });
+  // role is the EFFECTIVE per-org role (from org_members), never the legacy
+  // users.role column (dropped in migration 0008).
+  const membership = (
+    await identityPool.query("SELECT role FROM org_members WHERE user_id = $1 ORDER BY created_at LIMIT 1", [user.id])
+  ) as { rows: { role: string }[] };
+  const res = NextResponse.json({ ok: true, user: { id: user.id, email: user.email, name: user.name ?? undefined, role: membership.rows[0]?.role } });
   res.headers.set("set-cookie", sessionCookie(session.id));
   return res;
 }

@@ -36,8 +36,75 @@ function isWriteRoute(req: NextRequest): boolean {
   return req.method === "POST" || req.method === "PUT" || req.method === "DELETE";
 }
 
+// ── Trusted-proxy IP handling (review M1, decision: TRUSTED_PROXY) ──────────
+// Rate limiting and login lockout key on the client IP. Previously ipOf()
+// blindly trusted the FIRST entry of X-Forwarded-For — a client could spoof it
+// (or the header entirely) to rotate IPs and bypass the limits. Now we only
+// trust XFF when it demonstrably comes from a configured reverse proxy.
+//
+// Deployment note: put the app behind a proxy that SETS/OVERWRITES
+// X-Forwarded-For, list that proxy (and /or its CIDR) in TRUSTED_PROXY, and do
+// not expose the app directly.
+
+/** Parse an IPv4 "a.b.c.d" to a 32-bit unsigned integer, or null. */
+function ipv4ToLong(ip: string): number | null {
+  const parts = ip.split(".").map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return null;
+  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+}
+
+/** Whether `ip` is inside an IPv4 CIDR (`a.b.c.d/nn`) or exactly matches it. */
+export function ipInCidr(ip: string, cidr: string): boolean {
+  const [base, bitsStr] = cidr.split("/");
+  const bits = bitsStr ? Number(bitsStr) : 32;
+  const ipNum = ipv4ToLong(ip);
+  const baseNum = ipv4ToLong(base);
+  if (ipNum === null || baseNum === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return ((ipNum & mask) >>> 0) === ((baseNum & mask) >>> 0);
+}
+
+/**
+ * Decide the client IP for rate limiting / brute-force lockout. Pure & tested.
+ *
+ * @param headers a minimal {get(name)} of the request headers
+ * @param trusted configured trusted proxies (or empty)
+ */
+export function resolveClientIp(
+  headers: Pick<Headers, "get">,
+  trusted: string[] = []
+): string {
+  const xff = headers.get("x-forwarded-for");
+  const xRealIp = headers.get("x-real-ip");
+  if (trusted.length) {
+    if (xff) {
+      const hops = xff.split(",").map((s) => s.trim()).filter(Boolean);
+      // XFF is appended by each proxy, so the LAST hop is the one that
+      // connected directly to us. If it is a trusted proxy, the FIRST hop is
+      // the original client. Require >1 hop so a direct client cannot simply
+      // claim a trusted proxy as its own address.
+      if (hops.length >= 2) {
+        const lastHop = hops[hops.length - 1];
+        if (trusted.some((p) => ipInCidr(lastHop, p))) {
+          return hops[0];
+        }
+      }
+    }
+    // Not provably behind a trusted proxy: do not read XFF at all.
+    return xRealIp ?? "untrusted";
+  }
+  // No TRUSTED_PROXY configured (dev / sandbox): best effort, documented as
+  // not trust-safe. Deployments that expose the app publicly should set it.
+  return xff?.split(",")[0]?.trim() ?? xRealIp ?? "local";
+}
+
+function trustedProxies(): string[] {
+  const raw = process.env.TRUSTED_PROXY ?? "";
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 function ipOf(req: NextRequest): string {
-  return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? req.headers.get("x-real-ip") ?? "local";
+  return resolveClientIp(req.headers, trustedProxies());
 }
 
 const uc = g.__userCache;

@@ -2,7 +2,7 @@
 // (Google Ads, Яндекс.Директ, Авито) through the unified data model.
 
 import { and, desc, eq, gte, ilike, inArray, sql } from "drizzle-orm";
-import { db, currentTenant } from "@/db";
+import { db, currentTenant, tenantOrgId } from "@/db";
 import { STRATEGIES, resolveStrategy } from "@/lib/adapters/yandex-direct/strategy";
 import {
   campaigns,
@@ -348,7 +348,7 @@ export async function runAccountAudit(i: ParsedIntent): Promise<ToolOutput> {
     for (const iss of block.issues.filter((x) => x.severity !== "low").slice(0, 3)) {
       if (!existing.has(iss.text)) {
         await db.insert(recommendations).values({
-          organizationId: currentTenant()?.orgId ?? 1,
+          organizationId: tenantOrgId(),
           platform: block.platform,
           type: "auto_audit",
           description: iss.text,
@@ -520,7 +520,18 @@ export async function adjustBids(i: ParsedIntent): Promise<ToolOutput> {
 
 // ─── create_campaign (write) ───────────────────────────────────────────────
 export async function createCampaign(i: ParsedIntent): Promise<ToolOutput> {
-  const platform = (i.platforms[0] ?? "google") as Platform;
+  // Review L1 (decision: clarify): a campaign needs an explicit platform.
+  // We never assume one — ask the user, and don't create anything.
+  if (i.platforms.length !== 1) {
+    return {
+      result: {
+        kind: "text",
+        text: "На какой площадке создать кампанию? Уточните: «Google Ads», «Яндекс.Директ» или «Авито».",
+      },
+      auditSummary: "create_campaign: не указана платформа — требуется уточнение",
+    };
+  }
+  const platform = i.platforms[0] as Platform;
   const name = String(i.params.name ?? "Новая кампания (создана агентом)");
   const budget = Number(i.params.budget ?? 2000);
   // Strategy is resolved ONCE through the shared mapping (E.1): the preview

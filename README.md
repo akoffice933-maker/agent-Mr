@@ -91,7 +91,7 @@ Google Ads и Авито: адаптеры готовы, остаются в san
 | Яндекс.Директ: production-адаптер (OAuth + API v5 + Метрика) | ✅ готов (E2E ждёт одобрения заявки на API-доступ Директа) |
 | Google Ads / Авито: адаптеры | ✅ sandbox |
 | Клиенты: Web UI · Telegram · MCP | ✅ |
-| Тесты + CI (реальный Postgres, RLS-аудит) | ✅ 91 тест |
+| Тесты + CI (реальный Postgres, RLS-аудит) | ✅ 173 теста |
 | Боевой supervised E2E на реальных деньгах | ⏳ следующий шаг — [ROADMAP.md](docs/ROADMAP.md) |
 
 Полное техническое задание — [`docs/TZ.md`](docs/TZ.md) · план hardening —
@@ -321,7 +321,7 @@ Long polling — публичный URL не требуется.
 
 ```bash
 npm run typecheck   # TypeScript
-npm run test        # vitest: 91 тест — unit + интеграция (RLS-аудит, execution pipeline, OAuth security)
+npm run test        # vitest: 173 теста — unit + интеграция (RLS-аудит, execution pipeline, OAuth security)
 cd mcp-server && npm run selftest   # MCP против работающего приложения
 cd telegram-bot && npm run selftest # форматирование ответов
 ```
@@ -369,5 +369,8 @@ For MCP/Telegram/server-to-server clients, prefer explicit capability scopes:
 `negative:write`, `credentials`, `policy`, `members`.
 
 Example: `npm run api-keys -- create campaign-bot --org 1 --scopes read,campaigns:write`.
-Legacy keys with no scope list remain unrestricted for backward compatibility;
-rotate them to scoped keys before production use.
+
+By default a **new** key with no `--scopes` is **read-only** (`read`); write
+capabilities require an explicit `--scopes`. Legacy keys created before scopes
+existed remain unrestricted for backward compatibility — rotate them to scoped
+keys before production use.

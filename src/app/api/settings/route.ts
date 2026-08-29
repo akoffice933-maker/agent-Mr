@@ -3,7 +3,7 @@ import { getSettings, updateSettings, writeAudit } from "@/lib/agent/safety";
 import { accountMode, hasToken, setAccountMode } from "@/lib/adapters/oauth-store";
 import type { Platform } from "@/lib/agent/types";
 import { withTenantRequest } from "@/lib/tenant/request";
-import { currentTenant } from "@/lib/tenant/pool";
+import { tenantOrgId } from "@/lib/tenant/pool";
 import { requireAction } from "@/lib/tenant/route-authz";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +28,7 @@ export async function GET(req: Request) {
       const platforms = (["google", "yandex", "avito"] as Platform[]).map(async (p) => ({
         platform: p,
         mode: await accountMode(p),
-        token: await hasToken(currentTenant()?.orgId ?? 1, p),
+        token: await hasToken(tenantOrgId(), p),
         configured: platformConfigured(p),
       }));
       return NextResponse.json({ ...s, platforms: await Promise.all(platforms) });
@@ -67,7 +67,6 @@ export async function POST(req: Request) {
         dailyLimit: typeof body.dailyLimit === "number" ? body.dailyLimit : undefined,
         weeklyLimit: typeof body.weeklyLimit === "number" ? body.weeklyLimit : undefined,
         monthlyLimit: typeof body.monthlyLimit === "number" ? body.monthlyLimit : undefined,
-        confirmBudget: typeof body.confirmBudget === "boolean" ? body.confirmBudget : undefined,
       });
       await writeAudit({
         actor: "ui",
