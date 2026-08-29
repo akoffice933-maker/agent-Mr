@@ -225,6 +225,23 @@ export const orgMembers = pgTable(
   (t) => [uniqueIndex("org_members_unique_idx").on(t.orgId, t.userId)]
 );
 
+// Pending organization invitations. Identity-plane table: access is guarded
+// by the members API using the authenticated tenant context.
+export const orgInvites = pgTable(
+  "org_invites",
+  {
+    id: serial("id").primaryKey(),
+    orgId: integer("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: text("role").notNull().default("viewer"),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    acceptedAt: timestamp("accepted_at"),
+  },
+  (t) => [index("org_invites_org_idx").on(t.orgId), index("org_invites_email_idx").on(t.email)]
+);
+
 // Org-scoped machine API keys (MCP / Telegram / scripts).
 export const apiKeys = pgTable("api_keys", {
   id: serial("id").primaryKey(),
@@ -238,6 +255,9 @@ export const apiKeys = pgTable("api_keys", {
   lastUsedAt: timestamp("last_used_at"),
   expiresAt: timestamp("expires_at"), // null = no expiration
   revokedAt: timestamp("revoked_at"), // null = active
+  // Optional per-key capability scopes. NULL preserves legacy unrestricted keys;
+  // newly created keys should always receive explicit scopes.
+  scopes: jsonb("scopes").$type<string[] | null>(),
 });
 
 // ── OAuth tokens for real platform integrations (encrypted at rest) ────────

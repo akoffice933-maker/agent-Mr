@@ -348,3 +348,23 @@ Definition of Done — закрыто:
 - Новые AI-фичи сверх текущих (advisor, session context)
 - Мультитенантность раньше Фазы B (sessions) — иначе двойная миграция
 - Реальные Google/Avito до завершения 14-дневного плана по Директу (День 7)
+
+## Phase 1 — machine capabilities & team operations
+
+Machine API keys may carry explicit capability scopes. `NULL` remains a legacy
+unrestricted key for backwards compatibility; newly created keys should use
+`--scopes`, for example:
+
+```bash
+npm run api-keys -- create mcp-read --scopes read
+npm run api-keys -- create campaign-bot --scopes read,campaigns:write
+npm run api-keys -- create bidder --scopes read,bids:write
+```
+
+The agent Policy Engine enforces the required capability before preview and
+again at approval/execution. Direct campaign/settings/member routes use the
+same scope mapping. Browser sessions are unchanged and remain role-based.
+
+Phase 1 also adds organization member management (`/api/members`) with owner-
+only role changes/removal, a last-owner guard, seven-day invitation tokens
+(stored hashed), and `/api/ops/summary` for tenant-scoped operational metrics.

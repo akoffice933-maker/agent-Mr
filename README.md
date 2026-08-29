@@ -361,3 +361,13 @@ PostgreSQL (Drizzle): campaigns, metrics_daily, keywords, avito_chats,
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).
+
+### Machine API keys
+
+For MCP/Telegram/server-to-server clients, prefer explicit capability scopes:
+`read`, `campaigns:write`, `bids:write`, `budget:write`, `promotion:write`,
+`negative:write`, `credentials`, `policy`, `members`.
+
+Example: `npm run api-keys -- create campaign-bot --org 1 --scopes read,campaigns:write`.
+Legacy keys with no scope list remain unrestricted for backward compatibility;
+rotate them to scoped keys before production use.

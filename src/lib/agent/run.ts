@@ -217,7 +217,7 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
   // Policy Engine — pre-dispatch decision (the LLM never executes anything directly).
   // Role + risk are evaluated here; the LLM's parameters can never override this.
   const preRisk = preDispatchRisk(intent);
-  const prePolicy = await evaluatePolicy({ tool: intent.tool, isWrite, settings, role, risk: preRisk });
+  const prePolicy = await evaluatePolicy({ tool: intent.tool, isWrite, settings, role, risk: preRisk, scopes: currentTenant()?.scopes });
 
   if (prePolicy.action === "block") {
     trace.push({ label: "Policy Engine: действие заблокировано", detail: prePolicy.reason, status: "block" });
@@ -244,7 +244,7 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
       // Policy Engine — full decision including role, risk and added daily cost.
       const costDaily = out.pending.costDaily ?? 0;
       const postRisk = { ...preDispatchRisk(execIntent), costDaily };
-      const policy = await evaluatePolicy({ tool: intent.tool, isWrite: true, settings, role, costDaily, risk: postRisk });
+      const policy = await evaluatePolicy({ tool: intent.tool, isWrite: true, settings, role, costDaily, risk: postRisk, scopes: currentTenant()?.scopes });
 
       if (policy.action === "block") {
         trace.push({ label: "Policy Engine: действие отклонено", detail: policy.reason, status: "block" });
@@ -487,7 +487,7 @@ export async function resolvePending(
 
   // Policy Engine re-check at approval time: limits may have been exhausted since the preview.
   const costDaily = Number(pending.costDaily ?? 0);
-  const approvalPolicy = await evaluatePolicy({ tool: pending.tool, isWrite: true, settings: await getSettings(), role: (ctx?.role as Role) ?? "admin", costDaily });
+  const approvalPolicy = await evaluatePolicy({ tool: pending.tool, isWrite: true, settings: await getSettings(), role: (ctx?.role as Role) ?? "admin", costDaily, scopes: ctx?.scopes ?? null });
   if (approvalPolicy.action === "block") {
     await db.update(pendingActions).set({ status: "rejected", version: sql`${pendingActions.version} + 1` }).where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), eq(pendingActions.status, "pending")));
     await writeAudit({ actor, tool: pending.tool, params: pending.params, platforms: [], dryRun: false, status: "blocked", summary: `Отклонено при подтверждении #${id}: ${approvalPolicy.reason}` });

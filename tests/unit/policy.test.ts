@@ -78,3 +78,26 @@ describe("Policy Engine", () => {
     expect(d.action).toBe("block");
   });
 });
+
+it("machine scope blocks writes outside the granted capability", async () => {
+  const d = await evaluatePolicy({
+    tool: "adjust_bids",
+    isWrite: true,
+    settings: base,
+    role: "admin",
+    scopes: ["read", "campaigns:write"],
+  });
+  expect(d.action).toBe("block");
+  if (d.action === "block") expect(d.reason).toContain("bids:write");
+});
+
+it("machine scope allows the exact capability", async () => {
+  const d = await evaluatePolicy({
+    tool: "set_campaign_status",
+    isWrite: true,
+    settings: base,
+    role: "admin",
+    scopes: ["read", "campaigns:write"],
+  });
+  expect(d.action).toBe("require_approval");
+});

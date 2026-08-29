@@ -58,6 +58,7 @@ interface TenantHeaders {
   "x-tenant-org-id": string;
   "x-tenant-user-id": string | null;
   "x-tenant-role": string;
+  "x-tenant-scopes": string | null;
 }
 
 // session → user → primary org membership (identity plane: no RLS there)
@@ -68,6 +69,7 @@ async function resolveSessionTenant(req: NextRequest): Promise<TenantHeaders | n
     "x-tenant-org-id": String(ctx.orgId),
     "x-tenant-user-id": ctx.userId ? String(ctx.userId) : null,
     "x-tenant-role": ctx.role,
+    "x-tenant-scopes": null,
   };
 }
 
@@ -75,19 +77,19 @@ async function resolveSessionTenant(req: NextRequest): Promise<TenantHeaders | n
 async function resolveKeyTenant(key: string): Promise<TenantHeaders | null> {
   const envKey = getApiKey();
   if (envKey && key === envKey) {
-    return { "x-tenant-org-id": "1", "x-tenant-user-id": null, "x-tenant-role": "admin" };
+    return { "x-tenant-org-id": "1", "x-tenant-user-id": null, "x-tenant-role": "admin", "x-tenant-scopes": null };
   }
   const hash = createHash("sha256").update(key).digest("hex");
   // Only active (non-revoked, non-expired) keys resolve; raw key is never
   // matched or stored — only its sha256 hash.
   const r = await identityPool.query(
-    "SELECT org_id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) LIMIT 1",
+    "SELECT org_id, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) LIMIT 1",
     [hash]
   );
-  const row = (r as { rows: { org_id: number }[] }).rows[0];
+  const row = (r as { rows: { org_id: number; scopes: string[] | null }[] }).rows[0];
   if (!row) return null;
   await identityPool.query("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1", [hash]);
-  return { "x-tenant-org-id": String(row.org_id), "x-tenant-user-id": null, "x-tenant-role": "admin" };
+  return { "x-tenant-org-id": String(row.org_id), "x-tenant-user-id": null, "x-tenant-role": "admin", "x-tenant-scopes": row.scopes ? JSON.stringify(row.scopes) : null };
 }
 
 export async function proxy(req: NextRequest) {
@@ -148,7 +150,18 @@ export async function proxy(req: NextRequest) {
     }
   } else {
     // Development / sandbox mode: single default tenant.
-    tenant = { "x-tenant-org-id": "1", "x-tenant-user-id": null, "x-tenant-role": "admin" };
+    tenant = { "x-tenant-org-id": "1", "x-tenant-user-id": null, "x-tenant-role": "admin", "x-tenant-scopes": null };
+  }
+
+  // Capability boundary for machine keys. Agent requests are checked by the
+  // Policy Engine because the required capability depends on the tool.
+  // Ordinary API reads require `read`; direct write routes use route guards.
+  if (tenant["x-tenant-scopes"]) {
+    let scopes: string[] = [];
+    try { scopes = JSON.parse(tenant["x-tenant-scopes"]) as string[]; } catch { scopes = []; }
+    if (!scopes.includes("read") && !isWriteRoute(req)) {
+      return NextResponse.json({ error: "forbidden", reason: "API key не имеет scope: read" }, { status: 403 });
+    }
   }
 
   // General rate limits (applies in all modes).
@@ -166,9 +179,11 @@ export async function proxy(req: NextRequest) {
   headers.delete(TENANT_HEADERS.orgId);
   headers.delete(TENANT_HEADERS.userId);
   headers.delete(TENANT_HEADERS.role);
+  headers.delete(TENANT_HEADERS.scopes);
   headers.set(TENANT_HEADERS.orgId, tenant["x-tenant-org-id"]);
   if (tenant["x-tenant-user-id"]) headers.set(TENANT_HEADERS.userId, tenant["x-tenant-user-id"]);
   headers.set(TENANT_HEADERS.role, tenant["x-tenant-role"]);
+  if (tenant["x-tenant-scopes"]) headers.set(TENANT_HEADERS.scopes, tenant["x-tenant-scopes"]);
 
   return NextResponse.next({ request: { headers } });
 }

@@ -35,7 +35,6 @@ export const DIRECT_TENANT_TABLES: string[] = [
   "pending_actions",
   "recommendations",
   "settings",
-  "oauth_states",
 ];
 
 export const DERIVED_TENANT_TABLES: string[] = ["metrics_daily", "keywords", "negative_keywords", "avito_chats"];
@@ -44,13 +43,14 @@ export const DERIVED_TENANT_TABLES: string[] = ["metrics_daily", "keywords", "ne
 // Identity/credential plane: NO RLS by design (the proxy resolves the tenant
 // context from these tables *before* any context exists). org_id invariants
 // are still enforced structurally (NOT NULL + FK) via ORG_ID_TABLES.
-export const IDENTITY_TABLES: string[] = ["organizations", "org_members", "api_keys", "users", "sessions"];
+export const IDENTITY_TABLES: string[] = ["organizations", "org_members", "api_keys", "users", "sessions", "org_invites"];
 
 // Tables whose org column must stay NOT NULL + FK even without RLS.
 const ORG_ID_TABLES: { table: string; column: string }[] = [
   ...DIRECT_TENANT_TABLES.map((t) => ({ table: t, column: "organization_id" })),
   { table: "api_keys", column: "org_id" },
   { table: "org_members", column: "org_id" },
+  { table: "org_invites", column: "org_id" },
 ];
 
 type QueryFn = (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
@@ -105,16 +105,22 @@ export async function runRlsAudit(query: QueryFn): Promise<RlsAuditReport> {
     }
   }
 
-  // 3. organization_id NOT NULL + FK on directly-scoped tables (except api_keys/org_members: they use org_id)
-  const notNullCheck = (
-    await query(
-      `SELECT table_name, column_name, is_nullable
-         FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND ((table_name IN ('api_keys', 'org_members') AND column_name = 'org_id')
-               OR column_name = 'organization_id')`
-    )
-  ).rows;
+  // 3. organization_id/org_id NOT NULL on every table in ORG_ID_TABLES — driven
+  // by that array (not a separately hand-maintained list) so a new identity-
+  // plane table can't silently skip this check, as oauth_states/org_invites
+  // both did before being wired into ORG_ID_TABLES.
+  const orgIdTablesPresent = ORG_ID_TABLES.filter((t) => all.includes(t.table));
+  const notNullCheck = orgIdTablesPresent.length
+    ? (
+        await query(
+          `SELECT table_name, column_name, is_nullable
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND (table_name, column_name) IN (${orgIdTablesPresent.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(", ")})`,
+          orgIdTablesPresent.flatMap((t) => [t.table, t.column])
+        )
+      ).rows
+    : [];
   const nnMap = new Map(
     notNullCheck.map((r) => [`${r.table_name}.${r.column_name}`, r.is_nullable === "NO"])
   );

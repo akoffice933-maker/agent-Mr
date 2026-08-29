@@ -14,6 +14,7 @@
 import { checkBudgetHeadroom } from "./safety";
 import type { SafetySettings } from "./safety";
 import { authorize, isExecuteAction, type Action, type Role, type RiskContext } from "./rbac";
+import { hasScope, scopeForAction } from "./scopes";
 
 export type PolicyDecision =
   | { action: "allow"; note?: string }
@@ -28,6 +29,8 @@ export interface PolicyInput {
   costDaily?: number;
   role: Role;
   risk?: RiskContext;
+  /** null = legacy unrestricted machine key / browser session */
+  scopes?: string[] | null;
 }
 
 /** Map a unified tool to its RBAC action class. */
@@ -53,7 +56,7 @@ export function toolToAction(tool: string): Action {
 }
 
 export async function evaluatePolicy(input: PolicyInput): Promise<PolicyDecision> {
-  const { tool, isWrite, settings, costDaily = 0, role, risk } = input;
+  const { tool, isWrite, settings, costDaily = 0, role, risk, scopes = null } = input;
 
   // 1. Reads pass without restrictions.
   if (!isWrite) return { action: "allow", note: "Операция чтения" };
@@ -71,6 +74,9 @@ export async function evaluatePolicy(input: PolicyInput): Promise<PolicyDecision
 
   // 3. RBAC + risk: may this role initiate this class of action?
   const action = toolToAction(tool);
+  if (scopes !== null && !hasScope(scopes, scopeForAction(action))) {
+    return { action: "block", reason: `API key не имеет scope: ${scopeForAction(action)}` };
+  }
   const authz = authorize({ role, action, context: { ...risk, costDaily: risk?.costDaily ?? costDaily } });
   if (authz.decision === "DENY") {
     return { action: "block", reason: authz.reason ?? "Доступ запрещён." };

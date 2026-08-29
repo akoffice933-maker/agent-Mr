@@ -6,10 +6,16 @@
 
 import { NextResponse } from "next/server";
 import { authorize, type Action, type Role } from "@/lib/agent/rbac";
-import { roleFromHeaders } from "./request";
+import { roleFromHeaders, scopesFromHeaders } from "./request";
+import { hasScope, scopeForAction } from "@/lib/agent/scopes";
 
 export function requireAction(req: Request, action: Action): NextResponse | null {
-  const role = roleFromHeaders(new Headers(req.headers));
+  const headers = new Headers(req.headers);
+  const role = roleFromHeaders(headers);
+  const scopes = scopesFromHeaders(headers);
+  if (scopes !== null && !hasScope(scopes, scopeForAction(action))) {
+    return NextResponse.json({ error: "forbidden", reason: `API key не имеет scope: ${scopeForAction(action)}` }, { status: 403 });
+  }
   const r = authorize({ role, action });
   if (r.decision === "DENY") {
     return NextResponse.json({ error: "forbidden", reason: r.reason }, { status: 403 });

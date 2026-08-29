@@ -10,6 +10,15 @@ import { withTenant } from "./pool";
 import { parseRole, type Role } from "@/lib/agent/rbac";
 
 /** Role for route-level RBAC (set by the proxy from membership / machine key). */
+export function scopesFromHeaders(h: Headers): string[] | null {
+  const raw = h.get(TENANT_HEADERS.scopes);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : null;
+  } catch { return null; }
+}
+
 export function roleFromHeaders(h: Headers): Role {
   return parseRole(h.get(TENANT_HEADERS.role));
 }
@@ -18,6 +27,7 @@ export const TENANT_HEADERS = {
   orgId: "x-tenant-org-id",
   userId: "x-tenant-user-id",
   role: "x-tenant-role",
+  scopes: "x-tenant-scopes",
 } as const;
 
 export function tenantContextFromHeaders(h: Headers): TenantContext {
@@ -30,6 +40,7 @@ export function tenantContextFromHeaders(h: Headers): TenantContext {
     // (The proxy always sets this after auth; resolveRequestContext's
     // auth-off dev default is the only intentional "admin" path.)
     role: parseRole(h.get(TENANT_HEADERS.role)),
+    scopes: scopesFromHeaders(h),
   };
 }
 

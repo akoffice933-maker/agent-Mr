@@ -31,6 +31,7 @@ export interface TenantContext {
   orgId: number;
   userId: number | null;
   role: string;
+  scopes?: string[] | null;
 }
 
 interface Store extends TenantContext {
@@ -48,7 +49,7 @@ const als = new AsyncLocalStorage<Store>();
 
 export function currentTenant(): TenantContext | null {
   const s = als.getStore();
-  return s ? { orgId: s.orgId, userId: s.userId, role: s.role } : null;
+  return s ? { orgId: s.orgId, userId: s.userId, role: s.role, scopes: s.scopes } : null;
 }
 
 function contextClient(): PoolClientLike | null {
@@ -120,6 +121,7 @@ export async function withTenant<T>(ctx: TenantContext, fn: (ctx: TenantContext)
       orgId: ctx.orgId,
       userId: ctx.userId,
       role: ctx.role,
+      scopes: ctx.scopes ?? null,
       __client: client as PoolClientLike,
       __queue: Promise.resolve(),
     };

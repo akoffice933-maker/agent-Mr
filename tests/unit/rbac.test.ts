@@ -103,3 +103,4 @@ describe("parseRole fail-closed (E.1 P0-4)", () => {
     expect(authorize({ role, action: "read" }).decision).toBe("ALLOW");
   });
 });
+
