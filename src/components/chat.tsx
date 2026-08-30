@@ -18,12 +18,32 @@ const QUICK = [
 
 const PLATFORM_HEX: Record<Platform, string> = { google: "#6aa6f5", yandex: "#fb5a3c", avito: "#47d185" };
 
+/**
+ * State of a pending action as far as the UI is concerned.
+ *
+ * 'failed' is NOT here on purpose: a failed action stays retryable (its retry
+ * resumes rather than duplicates), so its buttons must remain available.
+ */
+type ResolvedState = "applied" | "rejected" | "expired" | "executing";
+type ResolvedMap = Record<number, ResolvedState>;
+
+const RESOLVED_LABEL: Record<ResolvedState, string> = {
+  applied: "выполнено",
+  rejected: "отклонено",
+  expired: "истекло",
+  executing: "выполняется…",
+};
+
 export function Chat() {
   const [msgs, setMsgs] = useState<ChatMessageRow[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [resolved, setResolved] = useState<Record<number, "applied" | "rejected">>({});
+  // Which pending actions are no longer awaiting a decision. Seeded from the
+  // server on load: this state used to start empty on every mount, so a reload
+  // put "Подтвердить / Отклонить" back under an already-executed action. The
+  // click was correctly refused server-side, but nothing happened on screen.
+  const [resolved, setResolved] = useState<ResolvedMap>({});
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,6 +51,7 @@ export function Chat() {
       .then((r) => r.json())
       .then((d) => {
         setMsgs(d.messages ?? []);
+        setResolved(d.pendingStates ?? {});
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -64,6 +85,9 @@ export function Chat() {
   );
 
   const resolve = useCallback(async (id: number, decision: "approve" | "reject") => {
+    // Hide the buttons immediately: a double click must not send the decision
+    // twice while the request is in flight.
+    setResolved((r) => ({ ...r, [id]: decision === "approve" ? "executing" : "rejected" }));
     try {
       const res = await apiFetch("/api/agent/action", {
         method: "POST",
@@ -71,10 +95,44 @@ export function Chat() {
         body: JSON.stringify({ id, decision }),
       });
       const d = await res.json();
-      setResolved((r) => ({ ...r, [id]: decision === "approve" ? "applied" : "rejected" }));
-      if (d.agent) setMsgs((m) => [...m, d.agent]);
+
+      if (d.agent) {
+        setMsgs((m) => [...m, d.agent]);
+        setResolved((r) => ({ ...r, [id]: decision === "approve" ? "applied" : "rejected" }));
+        return;
+      }
+
+      // No agent message means the server declined to act on this action —
+      // it was already resolved, expired, or belongs to someone else. Say so
+      // instead of leaving the click without any visible effect, and re-sync
+      // with the server rather than guessing the state.
+      const fresh = await (await apiFetch("/api/agent/messages")).json();
+      setMsgs(fresh.messages ?? []);
+      setResolved(fresh.pendingStates ?? {});
+      setMsgs((m) => [
+        ...m,
+        {
+          id: -Date.now(),
+          role: "agent",
+          content: `Действие #${id} уже обработано или истекло — повторное подтверждение не требуется. Актуальный статус виден в разделе «Аудит».`,
+          meta: null,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
     } catch {
-      /* noop */
+      // Network failure: the decision may or may not have reached the server.
+      // Re-read the authoritative state instead of leaving a wrong local one.
+      try {
+        const fresh = await (await apiFetch("/api/agent/messages")).json();
+        setMsgs(fresh.messages ?? []);
+        setResolved(fresh.pendingStates ?? {});
+      } catch {
+        setResolved((r) => {
+          const next = { ...r };
+          delete next[id];
+          return next;
+        });
+      }
     }
   }, []);
 
@@ -173,7 +231,7 @@ function AgentMessage({
   onSend,
 }: {
   msg: ChatMessageRow;
-  resolved: Record<number, "applied" | "rejected">;
+  resolved: ResolvedMap;
   onResolve: (id: number, d: "approve" | "reject") => void;
   onSend: (text: string) => void;
 }) {
@@ -259,7 +317,7 @@ function ResultView({
   onSend,
 }: {
   result: ResultPayload;
-  resolved: Record<number, "applied" | "rejected">;
+  resolved: ResolvedMap;
   onResolve: (id: number, d: "approve" | "reject") => void;
   onSend: (text: string) => void;
 }) {
@@ -510,8 +568,16 @@ function ResultView({
             {result.verdict === "blocked" ? (
               <span className="ml-auto rounded-full border border-bad/40 bg-bad/10 px-2 py-0.5 text-[10px] font-bold uppercase text-bad">заблокировано</span>
             ) : (
-              <span className="ml-auto rounded-full border border-warn/40 bg-warn/10 px-2 py-0.5 text-[10px] font-bold uppercase text-warn">
-                {state ? (state === "applied" ? "выполнено" : "отклонено") : "требует подтверждения"}
+              <span
+                className={`ml-auto rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${
+                  state === "applied"
+                    ? "border-good/40 bg-good/10 text-good"
+                    : state === "rejected" || state === "expired"
+                      ? "border-line bg-panel3 text-fog"
+                      : "border-warn/40 bg-warn/10 text-warn"
+                }`}
+              >
+                {state ? RESOLVED_LABEL[state] : "требует подтверждения"}
               </span>
             )}
           </div>

@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import { TOOL_HANDLERS } from "@/lib/agent/run";
-import { TOOL_META } from "@/lib/agent/tool-meta";
+import { TOOL_META, uiToolCatalog } from "@/lib/agent/tool-meta";
 
 describe("tool registry <-> TOOL_META consistency (review P3)", () => {
   it("every tool declared in TOOL_META has a handler", () => {
@@ -32,6 +32,32 @@ describe("tool registry <-> TOOL_META consistency (review P3)", () => {
     // populated: both lists must be non-trivial and identical in size.
     expect(Object.keys(TOOL_HANDLERS).length).toBeGreaterThanOrEqual(15);
     expect(Object.keys(TOOL_HANDLERS).length).toBe(Object.keys(TOOL_META).length);
+  });
+
+  it("the /agent catalogue covers every user-facing tool", () => {
+    // The panel was a third hand-written list and had drifted: it advertised
+    // 12 tools out of 17, hiding set_campaign_status, list_recommendations and
+    // help. It is now derived from TOOL_META — this pins that every tool a
+    // user can invoke is actually advertised.
+    const shown = new Set(uiToolCatalog().map((t) => t.name));
+    const internal = new Set(["fallback"]); // plumbing, never advertised
+    const hidden = Object.keys(TOOL_META).filter((n) => !shown.has(n) && !internal.has(n));
+    expect(hidden).toEqual([]);
+  });
+
+  it("the catalogue advertises nothing the agent cannot run", () => {
+    for (const t of uiToolCatalog()) {
+      expect(typeof TOOL_HANDLERS[t.name], `advertised tool ${t.name} has no handler`).toBe("function");
+      expect(t.ui.desc.length).toBeGreaterThan(0);
+      expect(t.ui.platforms.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("reads are listed before writes in the catalogue", () => {
+    // Writes carry an "изменяет" badge; grouping them keeps the destructive
+    // half of the list visually together instead of interleaved with reads.
+    const kinds = uiToolCatalog().map((t) => t.kind);
+    expect(kinds).toEqual([...kinds].sort((a, b) => (a === "read" ? 0 : 1) - (b === "read" ? 0 : 1)));
   });
 
   it("every write tool in TOOL_META is executable", () => {

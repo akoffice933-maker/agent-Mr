@@ -8,29 +8,18 @@ import { Card, SectionTitle } from "@/components/ui";
 import { OnboardBanner } from "@/components/onboard-banner";
 import type { Platform } from "@/lib/agent/types";
 import { withTenantPage } from "@/lib/auth/dal";
+import { uiToolCatalog } from "@/lib/agent/tool-meta";
 
 export const dynamic = "force-dynamic";
+
+// Projection of TOOL_META — never a second hand-maintained list (see tool-meta.ts).
+const UNIFIED_TOOLS = uiToolCatalog();
 
 const PLATFORM_NAMES: Record<Platform, string> = {
   google: "Google Ads",
   yandex: "Яндекс.Директ",
   avito: "Авито",
 };
-
-const UNIFIED_TOOLS: { name: string; desc: string; platforms: ("g" | "y" | "a")[] }[] = [
-  { name: "get_spend_report", desc: "Сводный расход за период", platforms: ["g", "y", "a"] },
-  { name: "compare_cpa", desc: "Сравнение CPA между площадками", platforms: ["g", "y"] },
-  { name: "pause_low_ctr_campaigns", desc: "Пауза кампаний с CTR ниже порога", platforms: ["g", "y"] },
-  { name: "promote_low_view_listings", desc: "Продвижение объявлений с низким охватом", platforms: ["a"] },
-  { name: "run_account_audit", desc: "Аудит подключённых кабинетов", platforms: ["g", "y", "a"] },
-  { name: "adjust_bids", desc: "Изменение ставок по фильтру", platforms: ["g", "y"] },
-  { name: "create_campaign", desc: "Создание кампании", platforms: ["g", "y", "a"] },
-  { name: "list_campaigns", desc: "Список кампаний и объявлений", platforms: ["g", "y", "a"] },
-  { name: "get_keyword_performance", desc: "Статистика по ключевым фразам", platforms: ["g", "y"] },
-  { name: "add_negative_keywords", desc: "Добавление минус-фраз", platforms: ["g", "y"] },
-  { name: "get_avito_chat_summary", desc: "Сводка по чатам и лидам Авито", platforms: ["a"] },
-  { name: "apply_recommendation", desc: "Применение оптимизационной рекомендации", platforms: ["g", "y", "a"] },
-];
 
 const DOT: Record<string, string> = { g: "bg-google", y: "bg-yandex", a: "bg-avito" };
 
@@ -99,20 +88,28 @@ export default async function AgentPage({ searchParams }: { searchParams: Promis
           <Card className="flex-1 p-4">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wide text-fog">Unified Tool Layer</span>
-              <span className="rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-bold text-accent">12 tools</span>
+              <span className="rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-bold text-accent">{UNIFIED_TOOLS.length} tools</span>
             </div>
             <div className="space-y-1">
               {UNIFIED_TOOLS.map((t) => (
                 <div key={t.name} className="rounded-lg border border-line bg-panel2 px-2.5 py-1.5">
                   <div className="flex items-center gap-1.5">
                     <code className="text-[10px] font-semibold text-accent">{t.name}</code>
+                    {t.kind === "write" && (
+                      <span
+                        title="Изменяет кабинет — выполняется только после вашего подтверждения"
+                        className="rounded border border-warn/40 bg-warn/10 px-1 text-[9px] font-bold uppercase text-warn"
+                      >
+                        изменяет
+                      </span>
+                    )}
                     <span className="ml-auto flex gap-1">
-                      {t.platforms.map((p) => (
+                      {t.ui.platforms.map((p) => (
                         <span key={p} className={`h-1.5 w-1.5 rounded-full ${DOT[p]}`} />
                       ))}
                     </span>
                   </div>
-                  <div className="text-[10px] text-fog">{t.desc}</div>
+                  <div className="text-[10px] text-fog">{t.ui.desc}</div>
                 </div>
               ))}
             </div>

@@ -203,6 +203,43 @@ export async function getChatHistory(): Promise<ChatMessageRow[]> {
   return rows.map(serializeMessage);
 }
 
+/** Terminal/!pending states of pending actions, keyed by action id. */
+export type PendingStateMap = Record<number, "applied" | "rejected" | "expired" | "failed" | "executing">;
+
+/**
+ * Current state of every pending action of the organization that is NO LONGER
+ * awaiting a decision.
+ *
+ * The chat renders "Подтвердить / Отклонить" for any preview whose action it
+ * does not know to be resolved. That knowledge used to live only in React
+ * state, so a page reload brought the buttons back on actions that were
+ * already executed: the user clicked, the server correctly refused (resolve
+ * only accepts 'pending'/'failed'), and nothing at all happened on screen.
+ * Money was never at risk — the feedback was.
+ *
+ * Sent alongside the history so the client can restore the resolved state.
+ * 'failed' is deliberately reported but NOT treated as final by the UI: a
+ * failed action stays retryable, and its retry resumes rather than duplicates.
+ */
+export async function getPendingStates(): Promise<PendingStateMap> {
+  const rows = await db
+    .select({ id: pendingActions.id, status: pendingActions.status })
+    .from(pendingActions)
+    .where(sql`${pendingActions.status} <> 'pending'`);
+
+  const out: PendingStateMap = {};
+  for (const r of rows) {
+    // 'executing' is reported too: the action is mid-flight, so the buttons
+    // must not reappear and invite a second click while it runs.
+    if (r.status === "verified") out[r.id] = "applied";
+    else if (r.status === "rejected") out[r.id] = "rejected";
+    else if (r.status === "expired") out[r.id] = "expired";
+    else if (r.status === "failed") out[r.id] = "failed";
+    else if (r.status === "executing") out[r.id] = "executing";
+  }
+  return out;
+}
+
 async function insertAgentMessage(content: string, meta: AgentMeta | null): Promise<ChatMessageRow> {
   const row = (await db.insert(messages).values({ organizationId: orgId(), role: "agent", content, meta }).returning())[0];
   return serializeMessage(row);
