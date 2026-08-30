@@ -41,7 +41,7 @@
     "pg-embedded": "^0.2.3",
     "postcss": "8.5.26",
     "tailwindcss": "4.1.17",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "vitest": "^3.2.7"
   },
   "overrides": {
