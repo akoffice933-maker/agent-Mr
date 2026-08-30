@@ -6,8 +6,7 @@ import { Card, HBar, PlatformBadge, SectionTitle, StackedBars } from "@/componen
 import type { Platform } from "@/lib/agent/types";
 import { PLATFORM_LABEL } from "@/lib/agent/types";
 import { dateNDaysAgo, fmtDate, fmtMoney, fmtNum, fmtPct } from "@/lib/format";
-import { headers } from "next/headers";
-import { withTenantHeaders } from "@/lib/tenant/request";
+import { withTenantPage } from "@/lib/auth/dal";
 
 export const dynamic = "force-dynamic";
 
@@ -17,8 +16,7 @@ const PLATFORMS: Platform[] = ["google", "yandex", "avito"];
 export default async function AnalyticsPage(props: {
   searchParams: Promise<{ period?: string }>;
 }) {
-  const __h = await headers();
-  return withTenantHeaders(__h, async () => {
+  return withTenantPage(async () => {
   const sp = await props.searchParams;
   const days = [7, 14, 30].includes(Number(sp.period)) ? Number(sp.period) : 7;
   const from = dateNDaysAgo(days - 1);

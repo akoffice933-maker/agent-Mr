@@ -144,7 +144,12 @@ export const pendingActions = pgTable(
     costDaily: doublePrecision("cost_daily"), // extra ₽/day the action adds, for limit re-check on approve
     // Lifecycle: pending → executing → verified | failed | rejected.
     status: text("status").notNull().default("pending"),
-    idempotencyKey: text("idempotency_key").unique(),
+    // Uniqueness is enforced by a PARTIAL index covering only the active
+    // states (migration 0010): a terminal action releases its key so the user
+    // can legitimately repeat the same request later. Declared without
+    // .unique() here because drizzle-kit cannot express a WHERE clause on a
+    // column constraint.
+    idempotencyKey: text("idempotency_key"),
     attempts: integer("attempts").notNull().default(0),
     providerResponse: jsonb("provider_response"), // raw provider response for the write
     readback: jsonb("readback"), // state read back from the provider after the write

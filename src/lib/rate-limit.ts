@@ -19,6 +19,15 @@ export interface RateLimiterResult {
 }
 export interface RateLimiter {
   check(key: string, limit: number, windowMs?: number): Promise<RateLimiterResult>;
+  /**
+   * Side-effect-free read of the current budget: reports whether the key is
+   * already exhausted WITHOUT consuming a token.
+   *
+   * Needed by the login brute-force guard (review P1.3): checking "is this IP
+   * locked out?" on every login attempt must not itself count as an attempt,
+   * otherwise merely visiting the login form would burn the budget.
+   */
+  peek(key: string, limit: number, windowMs?: number): Promise<RateLimiterResult>;
 }
 
 const DEFAULT_WINDOW_MS = 60_000;
@@ -42,6 +51,16 @@ export class MemoryRateLimiter implements RateLimiter {
     const retryAfterMs = Math.ceil((1 - b.tokens) / rate);
     return { ok: false, retryAfterMs };
   }
+
+  async peek(key: string, limit: number, windowMs = DEFAULT_WINDOW_MS): Promise<RateLimiterResult> {
+    const now = Date.now();
+    const rate = limit / windowMs;
+    const b = this.buckets.get(key);
+    if (!b) return { ok: true };
+    const tokens = Math.min(limit, b.tokens + (now - b.ts) * rate);
+    if (tokens >= 1) return { ok: true };
+    return { ok: false, retryAfterMs: Math.ceil((1 - tokens) / rate) };
+  }
 }
 
 /** Cross-instance sliding-window log on Redis/Upstash (sorted set per key). */
@@ -54,7 +73,19 @@ export class RedisRateLimiter implements RateLimiter {
       pexpire: (k: string, ms: number) => unknown;
       exec: () => Promise<[unknown, unknown][] | null>;
     };
+    zcount?: (k: string, min: number, max: number) => Promise<number>;
   }) {}
+
+  /** Count entries in the window without adding one. */
+  async peek(key: string, limit: number, windowMs = DEFAULT_WINDOW_MS): Promise<RateLimiterResult> {
+    try {
+      const now = Date.now();
+      const count = this.redis.zcount ? await this.redis.zcount(key, now - windowMs, now) : 0;
+      return count >= limit ? { ok: false, retryAfterMs: windowMs } : { ok: true };
+    } catch {
+      return { ok: true }; // same fail-open posture as check()
+    }
+  }
   async check(key: string, limit: number, windowMs = DEFAULT_WINDOW_MS): Promise<RateLimiterResult> {
     try {
       const now = Date.now();

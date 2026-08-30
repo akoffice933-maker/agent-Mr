@@ -27,14 +27,21 @@ export async function GET(req: Request) {
       if (!ctx) return NextResponse.redirect(`${errTo}?oauth=error&platform=yandex`);
       const denied = requireActionRole(parseRole(ctx.role), "credentials");
       if (denied) return denied;
-      const state = createOauthState("yandex", ctx);
+      const state = await withTenant(ctx, () => createOauthState("yandex", ctx));
       return NextResponse.redirect(yandexAuthUrl(state));
     }
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    const entry = state ? consumeOauthState(state) : null;
     const session = await resolveSessionContext(req).catch(() => null);
-    if (!code || !entry || !session || entry.orgId !== session.orgId || (entry.userId !== null && entry.userId !== session.userId)) {
+    if (!code || !state || !session) {
+      return NextResponse.redirect(`${errTo}?oauth=error&platform=yandex`);
+    }
+    // Consume inside the completing session's tenant context: RLS makes a
+    // state issued for another organization invisible, so the cross-tenant
+    // check is enforced by Postgres. The explicit comparison below stays as
+    // defense in depth (and catches "same org, different user").
+    const entry = await withTenant(session, () => consumeOauthState(state));
+    if (!entry || entry.orgId !== session.orgId || (entry.userId !== null && entry.userId !== session.userId)) {
       return NextResponse.redirect(`${errTo}?oauth=error&platform=yandex`);
     }
     const ctx: TenantContext = session;

@@ -29,28 +29,51 @@ describe("password hashing (scrypt)", () => {
   });
 });
 
+// Review P1.3: the guard now runs on the shared RateLimiter (cross-instance
+// capable) and is async. Two behavioural notes the tests encode:
+//   * a SUCCESSFUL login no longer clears the window — otherwise one correct
+//     guess would reset the budget for the whole IP;
+//   * checking the lockout must not itself consume budget (peek, not check).
+// Each test uses a fresh IP so the sliding windows never interfere.
 describe("login brute-force guard", () => {
-  const ip = "10.9.8.7-test";
+  let n = 0;
+  const freshIp = () => `10.9.8.${++n}-test-${Date.now()}`;
 
-  it("allows login after success", () => {
-    recordLoginSuccess(ip);
-    expect(loginLockout(ip)).toBe(false);
+  it("a fresh client is not locked out", async () => {
+    expect(await loginLockout(freshIp())).toBe(false);
   });
 
-  it("locks after 5 failures in the window", () => {
-    recordLoginSuccess(ip); // reset counter
-    for (let i = 0; i < 5; i++) recordLoginFailure(ip);
-    expect(loginLockout(ip)).toBe(true);
-    // cleanup for other tests
-    recordLoginSuccess(ip);
-    expect(loginLockout(ip)).toBe(false);
+  it("locks after 5 failures in the window", async () => {
+    const ip = freshIp();
+    for (let i = 0; i < 5; i++) await recordLoginFailure(ip);
+    expect(await loginLockout(ip)).toBe(true);
   });
 
-  it("isolates lockouts per IP", () => {
-    recordLoginSuccess("other-ip-test");
-    for (let i = 0; i < 5; i++) recordLoginFailure(ip);
-    expect(loginLockout(ip)).toBe(true);
-    expect(loginLockout("other-ip-test")).toBe(false);
-    recordLoginSuccess(ip);
+  it("stays unlocked below the threshold", async () => {
+    const ip = freshIp();
+    for (let i = 0; i < 4; i++) await recordLoginFailure(ip);
+    expect(await loginLockout(ip)).toBe(false);
+  });
+
+  it("checking the lockout does not consume budget", async () => {
+    const ip = freshIp();
+    for (let i = 0; i < 4; i++) await recordLoginFailure(ip);
+    // Repeated probes must not push the client over the threshold.
+    for (let i = 0; i < 10; i++) expect(await loginLockout(ip)).toBe(false);
+  });
+
+  it("isolates lockouts per IP", async () => {
+    const locked = freshIp();
+    const other = freshIp();
+    for (let i = 0; i < 5; i++) await recordLoginFailure(locked);
+    expect(await loginLockout(locked)).toBe(true);
+    expect(await loginLockout(other)).toBe(false);
+  });
+
+  it("a successful login does not clear the failure window", async () => {
+    const ip = freshIp();
+    for (let i = 0; i < 5; i++) await recordLoginFailure(ip);
+    await recordLoginSuccess(ip);
+    expect(await loginLockout(ip)).toBe(true);
   });
 });

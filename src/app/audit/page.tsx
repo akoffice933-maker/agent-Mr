@@ -3,8 +3,7 @@ import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 import { AuditStatusBadge, Card, SectionTitle } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
-import { headers } from "next/headers";
-import { withTenantHeaders } from "@/lib/tenant/request";
+import { withTenantPage } from "@/lib/auth/dal";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +14,7 @@ const ACTOR_LABEL: Record<string, string> = {
 };
 
 export default async function AuditPage() {
-  const __h = await headers();
-  return withTenantHeaders(__h, async () => {
+  return withTenantPage(async () => {
   const [rows, counts] = await Promise.all([
     db.select().from(auditLog).orderBy(desc(auditLog.id)).limit(200),
     db

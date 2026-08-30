@@ -90,36 +90,54 @@ export async function countUsers(): Promise<number> {
   return rows.length;
 }
 
-// ── Brute-force guard (in-memory, single instance; move to Redis for multi) ─
-const g = globalThis as typeof globalThis & { __loginAttempts?: Map<string, { fails: number; firstAt: number; lockedUntil: number }> };
-const attempts: Map<string, { fails: number; firstAt: number; lockedUntil: number }> = g.__loginAttempts ?? (g.__loginAttempts = new Map());
+// ── Brute-force guard ───────────────────────────────────────────────────────
+//
+// Review P1.3. Two defects fixed here:
+//
+//  1. The counter lived in a per-process Map, so with N replicas an attacker
+//     effectively got N × MAX_FAILS attempts, and a restart cleared all
+//     lockouts. It now goes through the shared RateLimiter abstraction
+//     (src/lib/rate-limit.ts) — Redis when REDIS_URL is set, in-memory
+//     otherwise — so the limit holds across instances.
+//
+//  2. The caller keyed the counter on a spoofable IP (see the route). The IP
+//     is now resolved with the trusted-proxy logic; this module just consumes
+//     whatever key it is given.
+//
+// Semantics: MAX_FAILS failures inside WINDOW_MS lock the key for the rest of
+// the window. Only FAILURES consume budget — a successful login does not.
+
+import { getRateLimiter } from "@/lib/rate-limit";
 
 const MAX_FAILS = 5;
 const WINDOW_MS = 15 * 60 * 1000;
-const LOCK_MS = 15 * 60 * 1000;
 
-export function loginLockout(ip: string): boolean {
-  const a = attempts.get(ip);
-  if (!a) return false;
-  if (a.lockedUntil > Date.now()) return true;
-  if (a.firstAt + WINDOW_MS < Date.now()) {
-    attempts.delete(ip);
-    return false;
-  }
-  return false;
+/** Namespaced key so login attempts never collide with request rate limits. */
+const failKey = (ip: string) => `login:fail:${ip}`;
+
+/**
+ * Whether this client has exhausted its failed-login budget.
+ * Read-only: checking the lock never consumes budget itself.
+ */
+export async function loginLockout(ip: string): Promise<boolean> {
+  const limiter = await getRateLimiter();
+  const r = await limiter.peek(failKey(ip), MAX_FAILS, WINDOW_MS);
+  return !r.ok;
 }
 
-export function recordLoginFailure(ip: string): void {
-  const now = Date.now();
-  const a = attempts.get(ip);
-  if (!a || a.firstAt + WINDOW_MS < now) {
-    attempts.set(ip, { fails: 1, firstAt: now, lockedUntil: 0 });
-    return;
-  }
-  a.fails += 1;
-  if (a.fails >= MAX_FAILS) a.lockedUntil = now + LOCK_MS;
+/** Record one failed attempt (the only thing that consumes budget). */
+export async function recordLoginFailure(ip: string): Promise<void> {
+  const limiter = await getRateLimiter();
+  await limiter.check(failKey(ip), MAX_FAILS, WINDOW_MS);
 }
 
-export function recordLoginSuccess(ip: string): void {
-  attempts.delete(ip);
+/**
+ * Successful login.
+ *
+ * The failure window is intentionally NOT reset: with a sliding window a reset
+ * would let an attacker who guesses one valid credential clear the counter for
+ * the whole IP. Entries age out on their own after WINDOW_MS.
+ */
+export async function recordLoginSuccess(_ip: string): Promise<void> {
+  // no-op by design (see above)
 }

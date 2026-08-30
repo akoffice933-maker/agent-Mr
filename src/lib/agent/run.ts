@@ -87,8 +87,16 @@ export async function createPendingAction(args: {
   preview: unknown;
   costDaily: number;
   source: string;
-}): Promise<{ id: number }> {
-  const row = await db
+}): Promise<{ id: number; duplicateOf?: number }> {
+  const key = idempotencyKey(args.tool, args.params, args.org);
+
+  // Review P1.2. Duplicate handling MUST NOT rely on catching the 23505:
+  // withTenant() runs the whole request inside a single transaction, so a
+  // raised unique violation aborts it and every subsequent statement — the
+  // recovery SELECT included — fails with 25P02. `ON CONFLICT DO NOTHING`
+  // keeps the transaction healthy and turns the duplicate into an empty
+  // result we can handle inline.
+  const inserted = await db
     .insert(pendingActions)
     .values({
       organizationId: args.org,
@@ -96,14 +104,54 @@ export async function createPendingAction(args: {
       params: args.params,
       preview: args.preview,
       costDaily: args.costDaily,
-      idempotencyKey: idempotencyKey(args.tool, args.params, args.org),
+      idempotencyKey: key,
       status: "pending",
       source: args.source,
       // 0.5: approval/retry window.
       expiresAt: new Date(Date.now() + PENDING_TTL_MS),
     })
+    .onConflictDoNothing()
     .returning();
-  return { id: row[0].id };
+
+  if (inserted.length > 0) return { id: inserted[0].id };
+
+  // The partial unique index (migration 0010) matched: an IDENTICAL action is
+  // already pending/executing — that is exactly what idempotency is for
+  // (double-click, retried webhook, two clients at once). Surface the existing
+  // action instead of a 500, so the caller can show the user the item they
+  // already have awaiting approval.
+  const existing = (
+    await db
+      .select({ id: pendingActions.id })
+      .from(pendingActions)
+      .where(
+        and(
+          eq(pendingActions.organizationId, args.org),
+          eq(pendingActions.idempotencyKey, key),
+          inArray(pendingActions.status, ["pending", "executing"])
+        )
+      )
+  )[0];
+  if (existing) return { id: existing.id, duplicateOf: existing.id };
+
+  // No active duplicate and no insert: a concurrent transaction resolved the
+  // conflicting row between our INSERT and this SELECT. Retry once, now that
+  // the key is free.
+  const retry = await db
+    .insert(pendingActions)
+    .values({
+      organizationId: args.org,
+      tool: args.tool,
+      params: args.params,
+      preview: args.preview,
+      costDaily: args.costDaily,
+      idempotencyKey: key,
+      status: "pending",
+      source: args.source,
+      expiresAt: new Date(Date.now() + PENDING_TTL_MS),
+    })
+    .returning();
+  return { id: retry[0].id };
 }
 
 /**
@@ -290,6 +338,14 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
           pendingId = created.id;
           result = { ...(result as Extract<ResultPayload, { kind: "preview" }>), pendingActionId: created.id };
           auditStatus = settings.dryRun ? "dry_run" : "pending";
+          if (created.duplicateOf) {
+            // Idempotency hit: an identical action is already queued.
+            trace.push({
+              label: `Идемпотентность: такое действие уже ожидает подтверждения (#${created.duplicateOf})`,
+              detail: "Новая запись не создавалась — показано существующее действие.",
+              status: "warn",
+            });
+          }
         }
       }
     } else {

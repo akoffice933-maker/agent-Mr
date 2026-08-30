@@ -3,6 +3,7 @@ import { getUserByEmail } from "@/lib/auth/sessions";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { sessionCookie } from "@/lib/auth/cookies";
 import { identityPool } from "@/lib/tenant/pool";
+import { clientIpOf } from "@/lib/net/client-ip";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,7 +13,10 @@ export const runtime = "nodejs";
 // (5 fails / 15 min). Timing: password verify always runs when the user exists;
 // a dummy scrypt check equalizes timing when it does not.
 export async function POST(req: Request) {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+  // Review P1.3: this used to read X-Forwarded-For[0] directly, so an attacker
+  // could rotate the header on every request and never trip the lockout. Use
+  // the same trusted-proxy logic as the rest of the app.
+  const ip = clientIpOf(req);
   let body: { email?: string; password?: string };
   try {
     body = await req.json();
@@ -25,17 +29,17 @@ export async function POST(req: Request) {
 
   // Lazy import to keep the lockout helpers tree-shakeable and avoid cycles.
   const { loginLockout, recordLoginFailure, recordLoginSuccess, createSession } = await import("@/lib/auth/sessions");
-  if (loginLockout(ip)) {
+  if (await loginLockout(ip)) {
     return NextResponse.json({ error: "too many failed attempts — try again in 15 minutes" }, { status: 429 });
   }
 
   const user = await getUserByEmail(email);
   const ok = user ? verifyPassword(password, user.passwordHash) : (verifyPassword(password, DUMMY_HASH), false);
   if (!ok) {
-    recordLoginFailure(ip);
+    await recordLoginFailure(ip);
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
-  recordLoginSuccess(ip);
+  await recordLoginSuccess(ip);
 
   const session = await createSession(user.id, ip, req.headers.get("user-agent") ?? undefined);
   // role is the EFFECTIVE per-org role (from org_members), never the legacy

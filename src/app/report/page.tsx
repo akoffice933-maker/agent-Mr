@@ -6,8 +6,7 @@ import { dateNDaysAgo, fmtMoney, fmtNum, fmtPct, todayISO } from "@/lib/format";
 import { Card, PlatformBadge, SectionTitle } from "@/components/ui";
 import { Icon } from "@/components/icons";
 import { PLATFORM_LABEL, type Platform, type PlatformStat } from "@/lib/agent/types";
-import { headers } from "next/headers";
-import { withTenantHeaders } from "@/lib/tenant/request";
+import { withTenantPage } from "@/lib/auth/dal";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +17,7 @@ interface RowData extends PlatformStat {
 }
 
 export default async function ReportPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const __h = await headers();
-  return withTenantHeaders(__h, async () => {
+  return withTenantPage(async () => {
   const sp = await searchParams;
   const days = Math.min(30, Math.max(1, parseInt(String(sp.days ?? "7"), 10) || 7));
   const from = dateNDaysAgo(days - 1);

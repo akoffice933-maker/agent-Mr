@@ -24,14 +24,59 @@ const DEFAULTS: SafetySettings = {
 };
 
 export async function getSettings(): Promise<SafetySettings> {
-  const rows = await db.select().from(settings);
-  const map = new Map(rows.map((r) => [r.key, r.value]));
+  // Read the jsonb TYPE alongside the value.
+  //
+  // Why not a plain db.select(): the jsonb payload is parsed twice on the way
+  // out (node-pg parses the column, drizzle parses the result again), so a row
+  // holding the JSON *string* "false" arrives in JS as the boolean `false` —
+  // indistinguishable from a real, deliberate `false`. A malformed row could
+  // therefore switch read-only OFF. Asking Postgres for jsonb_typeof lets us
+  // accept only values that are genuinely booleans in the database.
+  const rows = (await db
+    .select({ key: settings.key, value: settings.value, jsonType: sql<string>`jsonb_typeof(${settings.value})` })
+    .from(settings)) as { key: string; value: unknown; jsonType: string | null }[];
+
+  const map = new Map(rows.map((r) => [r.key, r]));
+
+  /**
+   * Read a stored boolean flag, falling back to the DEFAULT when the row does
+   * not exist.
+   *
+   * SECURITY (review P1): this used to be `map.get("read_only") === true`,
+   * which silently evaluated to FALSE for any organization without an explicit
+   * settings row — i.e. DEFAULTS.readOnly / DEFAULTS.dryRun were never applied.
+   * Only the seeded org #1 ever had those rows, so every organization created
+   * later (invite, API, manual insert) started with read-only and dry-run
+   * DISABLED — the exact inverse of the product's core promise that "the agent
+   * is read-only until you explicitly opt in".
+   *
+   * `map.has()` distinguishes "not configured" (use the safe default) from
+   * "explicitly configured", and the `=== true` comparison keeps a stray
+   * non-boolean jsonb value (e.g. the string "false") from reading as enabled.
+   */
+  const flag = (key: string, fallback: boolean): boolean => {
+    const row = map.get(key);
+    // Only a value that is a BOOLEAN in the database counts as configuration.
+    // Anything else (a stray JSON string "false", a number, null from a bad
+    // migration) falls back to the SAFE default rather than the unsafe
+    // direction — a malformed row must never switch read-only/dry-run off.
+    if (!row || row.jsonType !== "boolean") return fallback;
+    return row.value === true;
+  };
+
+  const num = (key: string, fallback: number): number => {
+    const row = map.get(key);
+    if (!row || row.jsonType !== "number") return fallback;
+    const v = Number(row.value);
+    return Number.isFinite(v) ? v : fallback;
+  };
+
   return {
-    dryRun: map.get("dry_run") === true,
-    readOnly: map.get("read_only") === true,
-    dailyLimit: Number(map.get("daily_limit") ?? DEFAULTS.dailyLimit),
-    weeklyLimit: Number(map.get("weekly_limit") ?? DEFAULTS.weeklyLimit),
-    monthlyLimit: Number(map.get("monthly_limit") ?? DEFAULTS.monthlyLimit),
+    dryRun: flag("dry_run", DEFAULTS.dryRun),
+    readOnly: flag("read_only", DEFAULTS.readOnly),
+    dailyLimit: num("daily_limit", DEFAULTS.dailyLimit),
+    weeklyLimit: num("weekly_limit", DEFAULTS.weeklyLimit),
+    monthlyLimit: num("monthly_limit", DEFAULTS.monthlyLimit),
   };
 }
 

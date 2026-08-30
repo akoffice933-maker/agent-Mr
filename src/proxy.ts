@@ -19,10 +19,15 @@ import { identityPool } from "@/lib/tenant/pool";
 import { resolveSessionContext } from "@/lib/tenant/resolve";
 import { TENANT_HEADERS } from "@/lib/tenant/request";
 import { getRateLimiter } from "@/lib/rate-limit";
+import { COOKIE_NAME } from "@/lib/auth/sessions";
+import { clientIpOf } from "@/lib/net/client-ip";
 
 const g = globalThis as typeof globalThis & {
   __userCache?: { at: number; has: boolean };
 };
+
+/** Pages reachable without a session (the login screen itself). */
+const PUBLIC_PAGES = new Set(["/login"]);
 
 // Cross-instance rate limiting (Phase 0.2): Redis/Upstash when REDIS_URL is
 // set, in-memory token bucket otherwise (and as fail-open fallback).
@@ -37,76 +42,13 @@ function isWriteRoute(req: NextRequest): boolean {
 }
 
 // ── Trusted-proxy IP handling (review M1, decision: TRUSTED_PROXY) ──────────
-// Rate limiting and login lockout key on the client IP. Previously ipOf()
-// blindly trusted the FIRST entry of X-Forwarded-For — a client could spoof it
-// (or the header entirely) to rotate IPs and bypass the limits. Now we only
-// trust XFF when it demonstrably comes from a configured reverse proxy.
-//
-// Deployment note: put the app behind a proxy that APPENDS its own address
-// as the last X-Forwarded-For hop (not a bare overwrite — that yields a
-// single hop, which this code never trusts by design; see .env.example for
-// the exact nginx directive), list that proxy (and/or its CIDR) in
-// TRUSTED_PROXY, and do not expose the app directly.
-
-/** Parse an IPv4 "a.b.c.d" to a 32-bit unsigned integer, or null. */
-function ipv4ToLong(ip: string): number | null {
-  const parts = ip.split(".").map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return null;
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-}
-
-/** Whether `ip` is inside an IPv4 CIDR (`a.b.c.d/nn`) or exactly matches it. */
-export function ipInCidr(ip: string, cidr: string): boolean {
-  const [base, bitsStr] = cidr.split("/");
-  const bits = bitsStr ? Number(bitsStr) : 32;
-  const ipNum = ipv4ToLong(ip);
-  const baseNum = ipv4ToLong(base);
-  if (ipNum === null || baseNum === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
-  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-  return ((ipNum & mask) >>> 0) === ((baseNum & mask) >>> 0);
-}
-
-/**
- * Decide the client IP for rate limiting / brute-force lockout. Pure & tested.
- *
- * @param headers a minimal {get(name)} of the request headers
- * @param trusted configured trusted proxies (or empty)
- */
-export function resolveClientIp(
-  headers: Pick<Headers, "get">,
-  trusted: string[] = []
-): string {
-  const xff = headers.get("x-forwarded-for");
-  const xRealIp = headers.get("x-real-ip");
-  if (trusted.length) {
-    if (xff) {
-      const hops = xff.split(",").map((s) => s.trim()).filter(Boolean);
-      // XFF is appended by each proxy, so the LAST hop is the one that
-      // connected directly to us. If it is a trusted proxy, the FIRST hop is
-      // the original client. Require >1 hop so a direct client cannot simply
-      // claim a trusted proxy as its own address.
-      if (hops.length >= 2) {
-        const lastHop = hops[hops.length - 1];
-        if (trusted.some((p) => ipInCidr(lastHop, p))) {
-          return hops[0];
-        }
-      }
-    }
-    // Not provably behind a trusted proxy: do not read XFF at all.
-    return xRealIp ?? "untrusted";
-  }
-  // No TRUSTED_PROXY configured (dev / sandbox): best effort, documented as
-  // not trust-safe. Deployments that expose the app publicly should set it.
-  return xff?.split(",")[0]?.trim() ?? xRealIp ?? "local";
-}
-
-function trustedProxies(): string[] {
-  const raw = process.env.TRUSTED_PROXY ?? "";
-  return raw.split(",").map((s) => s.trim()).filter(Boolean);
-}
+// The implementation now lives in src/lib/net/client-ip.ts (review P3: pure,
+// reusable helpers should not be trapped inside a framework convention file).
+// Re-exported here so existing imports and tests keep working unchanged.
+export { ipInCidr, resolveClientIp } from "@/lib/net/client-ip";
 
 function ipOf(req: NextRequest): string {
-  return resolveClientIp(req.headers, trustedProxies());
+  return clientIpOf(req);
 }
 
 const uc = g.__userCache;
@@ -161,12 +103,49 @@ async function resolveKeyTenant(key: string): Promise<TenantHeaders | null> {
   return { "x-tenant-org-id": String(row.org_id), "x-tenant-user-id": null, "x-tenant-role": "admin", "x-tenant-scopes": row.scopes ? JSON.stringify(row.scopes) : null };
 }
 
+/**
+ * Strip every client-supplied x-tenant-* header.
+ *
+ * SECURITY (review P0): these headers are an INTERNAL channel — the proxy sets
+ * them after authenticating the caller. A client must never be able to inject
+ * them, so they are removed as the very first action, before any early return
+ * (health, OAuth) and regardless of auth mode. Pages additionally no longer
+ * trust them at all (see src/lib/auth/dal.ts) — this is defense in depth.
+ */
+function stripTenantHeaders(req: NextRequest): Headers {
+  const clean = new Headers(req.headers);
+  for (const h of Object.values(TENANT_HEADERS)) clean.delete(h);
+  return clean;
+}
+
 export async function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname;
 
+  // Sanitize FIRST: no code path may forward client-supplied tenant headers.
+  const sanitized = stripTenantHeaders(req);
+  const passThrough = () => NextResponse.next({ request: { headers: sanitized } });
+
+  // Non-API routes (pages, RSC payloads). The authorization boundary for them
+  // is the DAL (src/lib/auth/dal.ts) — it resolves identity from the session
+  // cookie and redirects when there is none. Here we additionally:
+  //   1. guarantee forged x-tenant-* headers never reach the render;
+  //   2. short-circuit anonymous requests with an honest 307 instead of
+  //      rendering a full RSC payload that only carries a redirect.
+  if (!path.startsWith("/api/")) {
+    if (isAuthRequired() && !PUBLIC_PAGES.has(path)) {
+      const sid = req.cookies.get(COOKIE_NAME)?.value;
+      if (!sid || !/^[a-f0-9]{64}$/.test(sid)) {
+        const to = new URL("/login", req.url);
+        if (path !== "/") to.searchParams.set("next", path);
+        return NextResponse.redirect(to, 307);
+      }
+    }
+    return passThrough();
+  }
+
   // Always-open routes.
   if (path === "/api/health" || path.startsWith("/api/oauth/")) {
-    return NextResponse.next();
+    return passThrough();
   }
 
   const authRequired = isAuthRequired();
@@ -185,7 +164,7 @@ export async function proxy(req: NextRequest) {
         return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": "60" } });
       }
     }
-    return NextResponse.next();
+    return passThrough();
   }
 
   let tenant: TenantHeaders;
@@ -256,12 +235,9 @@ export async function proxy(req: NextRequest) {
     );
   }
 
-  // Forward the tenant via INTERNAL headers; strip any client-supplied copies.
-  const headers = new Headers(req.headers);
-  headers.delete(TENANT_HEADERS.orgId);
-  headers.delete(TENANT_HEADERS.userId);
-  headers.delete(TENANT_HEADERS.role);
-  headers.delete(TENANT_HEADERS.scopes);
+  // Forward the tenant via INTERNAL headers. `sanitized` already had every
+  // client-supplied copy removed at the top of this function.
+  const headers = sanitized;
   headers.set(TENANT_HEADERS.orgId, tenant["x-tenant-org-id"]);
   if (tenant["x-tenant-user-id"]) headers.set(TENANT_HEADERS.userId, tenant["x-tenant-user-id"]);
   headers.set(TENANT_HEADERS.role, tenant["x-tenant-role"]);
@@ -270,4 +246,15 @@ export async function proxy(req: NextRequest) {
   return NextResponse.next({ request: { headers } });
 }
 
-export const config = { matcher: ["/api/:path*"] };
+// Matcher now covers PAGES too (review P0): previously "/api/:path*" meant the
+// proxy never ran for server-rendered routes, so client-supplied x-tenant-*
+// headers reached them untouched. Pages are authorized by the DAL, but the
+// proxy still strips forged tenant headers for them — defense in depth.
+//
+// Static assets and Next internals are excluded: they carry no tenant data and
+// running the proxy for every chunk would add pointless latency.
+export const config = {
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|gif|svg|webp|ico|mp4|webm|css|js|map|woff|woff2|ttf)$).*)",
+  ],
+};

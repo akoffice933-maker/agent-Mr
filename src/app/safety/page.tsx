@@ -4,8 +4,7 @@ import { Icon } from "@/components/icons";
 import { SettingsPanel } from "@/components/settings-panel";
 import { Card, PlatformBadge, SectionTitle } from "@/components/ui";
 import type { Platform } from "@/lib/agent/types";
-import { headers } from "next/headers";
-import { withTenantHeaders } from "@/lib/tenant/request";
+import { withTenantPage } from "@/lib/auth/dal";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +18,7 @@ const POLICIES = [
 ];
 
 export default async function SafetyPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const __h = await headers();
-  return withTenantHeaders(__h, async () => {
+  return withTenantPage(async () => {
   const accs = await db.select().from(accounts);
   const sp = await searchParams;
   const oauthOk = sp.oauth === "ok" ? String(sp.platform ?? "") : null;

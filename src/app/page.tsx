@@ -7,16 +7,14 @@ import { AuditStatusBadge, Card, Delta, SectionTitle, Sparkline, StackedBars, pl
 import type { Platform } from "@/lib/agent/types";
 import { PLATFORM_LABEL } from "@/lib/agent/types";
 import { dateNDaysAgo, fmtDateTime, fmtMoney, fmtNum, fmtPct } from "@/lib/format";
-import { headers } from "next/headers";
-import { withTenantHeaders } from "@/lib/tenant/request";
+import { withTenantPage } from "@/lib/auth/dal";
 
 export const dynamic = "force-dynamic";
 
 const HEX: Record<Platform, string> = { google: "#6aa6f5", yandex: "#fb5a3c", avito: "#47d185" };
 
 export default async function DashboardPage() {
-  const __h = await headers();
-  return withTenantHeaders(__h, async () => {
+  return withTenantPage(async () => {
   const today = dateNDaysAgo(0);
   const from14 = dateNDaysAgo(13);
   const from7 = dateNDaysAgo(6);

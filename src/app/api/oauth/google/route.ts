@@ -27,15 +27,22 @@ export async function GET(req: Request) {
       if (!ctx) return NextResponse.redirect(`${errTo}?oauth=error&platform=google`);
       const denied = requireActionRole(parseRole(ctx.role), "credentials");
       if (denied) return denied;
-      const state = createOauthState("google", ctx);
+      const state = await withTenant(ctx, () => createOauthState("google", ctx));
       return NextResponse.redirect(googleAuthUrl(state));
     }
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    const entry = state ? consumeOauthState(state) : null;
     // Verify the completing session matches the one that initiated the flow.
     const session = await resolveSessionContext(req).catch(() => null);
-    if (!code || !entry || !session || entry.orgId !== session.orgId || (entry.userId !== null && entry.userId !== session.userId)) {
+    if (!code || !state || !session) {
+      return NextResponse.redirect(`${errTo}?oauth=error&platform=google`);
+    }
+    // Consume inside the completing session's tenant context: RLS makes a
+    // state issued for another organization invisible, so the cross-tenant
+    // check is enforced by Postgres. The explicit comparison below stays as
+    // defense in depth (and catches "same org, different user").
+    const entry = await withTenant(session, () => consumeOauthState(state));
+    if (!entry || entry.orgId !== session.orgId || (entry.userId !== null && entry.userId !== session.userId)) {
       return NextResponse.redirect(`${errTo}?oauth=error&platform=google`);
     }
     const ctx: TenantContext = session;

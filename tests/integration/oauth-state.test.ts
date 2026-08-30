@@ -17,8 +17,9 @@
 // post-oauth sync() failure is caught by the route by design.
 
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { db, withTenant, identityPool } from "@/db";
-import { oauthTokens } from "@/db/schema";
+import { oauthStates, oauthTokens } from "@/db/schema";
 import { decrypt } from "@/lib/crypto";
 import { createOauthState, consumeOauthState } from "@/lib/oauth-state";
 import { GET } from "@/app/api/oauth/yandex/route";
@@ -41,6 +42,13 @@ function makeRequest(opts: { code?: string; state?: string; sid?: string }): Req
   if (opts.code) u.searchParams.set("code", opts.code);
   if (opts.state) u.searchParams.set("state", opts.state);
   return new Request(u, { headers: { cookie: opts.sid ? `${SID}=${opts.sid}` : "" } });
+}
+
+/** Issue a state inside the issuing org's tenant context (RLS-bound insert). */
+async function issueState(s: Scenario): Promise<string> {
+  return withTenant({ orgId: s.org, userId: s.userId, role: "admin" }, () =>
+    createOauthState("yandex", { orgId: s.org, userId: s.userId, role: "admin" })
+  );
 }
 
 function locationOf(res: Response): string {
@@ -124,7 +132,7 @@ describe("oauth yandex callback security (E.1 P1-10)", () => {
   it("valid state + matching session → success, token stored for the org", async () => {
     stubTokenEndpoint();
     const s = sc.valid;
-    const state = createOauthState("yandex", { orgId: s.org, userId: s.userId, role: "admin" });
+    const state = await issueState(s);
     expect(await storedToken(s.org)).toBeNull();
     const res = await GET(makeRequest({ code: "code-1", state, sid: s.sid }));
     const loc = locationOf(res);
@@ -138,11 +146,17 @@ describe("oauth yandex callback security (E.1 P1-10)", () => {
   it("expired state → error redirect, no token stored", async () => {
     stubTokenEndpoint();
     const s = sc.expired;
-    const state = createOauthState("yandex", { orgId: s.org, userId: s.userId, role: "admin" });
-    // Force expiry through the in-memory store (same process).
-    const store = (globalThis as unknown as { __oauthStates?: Map<string, { exp: number }> }).__oauthStates;
-    const entry = store?.get(state);
-    if (entry) entry.exp = Date.now() - 1000;
+    const state = await issueState(s);
+    // Force expiry in the database (the state store is now DB-backed).
+    // NOTE: oauth_states is under FORCE RLS, so this UPDATE only matches when
+    // it runs inside the owning org's tenant context — a plain identityPool
+    // query would silently affect 0 rows.
+    await withTenant({ orgId: s.org, userId: s.userId, role: "admin" }, async () => {
+      await db
+        .update(oauthStates)
+        .set({ expiresAt: new Date(Date.now() - 60_000) })
+        .where(eq(oauthStates.state, state));
+    });
     const res = await GET(makeRequest({ code: "code-2", state, sid: s.sid }));
     expect(locationOf(res)).toContain("oauth=error");
     expect(await storedToken(s.org)).toBeNull();
@@ -151,7 +165,7 @@ describe("oauth yandex callback security (E.1 P1-10)", () => {
   it("wrong user (same org) → error redirect, no token", async () => {
     stubTokenEndpoint();
     const s = sc.wrongUser1;
-    const state = createOauthState("yandex", { orgId: s.org, userId: s.userId, role: "admin" });
+    const state = await issueState(s);
     const res = await GET(makeRequest({ code: "code-3", state, sid: sc.wrongUser2.sid }));
     expect(locationOf(res)).toContain("oauth=error");
     expect(await storedToken(s.org)).toBeNull();
@@ -160,7 +174,7 @@ describe("oauth yandex callback security (E.1 P1-10)", () => {
   it("wrong org → error redirect, no token for either org", async () => {
     stubTokenEndpoint();
     const stateOrg = sc.wrongOrgState;
-    const state = createOauthState("yandex", { orgId: stateOrg.org, userId: stateOrg.userId, role: "admin" });
+    const state = await issueState(stateOrg);
     const res = await GET(makeRequest({ code: "code-4", state, sid: sc.wrongOrgSession.sid }));
     expect(locationOf(res)).toContain("oauth=error");
     expect(await storedToken(stateOrg.org)).toBeNull();
@@ -170,7 +184,7 @@ describe("oauth yandex callback security (E.1 P1-10)", () => {
   it("replayed state (already consumed) → error redirect", async () => {
     stubTokenEndpoint();
     const s = sc.replay;
-    const state = createOauthState("yandex", { orgId: s.org, userId: s.userId, role: "admin" });
+    const state = await issueState(s);
     // First use: valid.
     const first = await GET(makeRequest({ code: "code-5a", state, sid: s.sid }));
     expect(locationOf(first)).toContain("/agent?onboard=yandex");
@@ -178,7 +192,9 @@ describe("oauth yandex callback security (E.1 P1-10)", () => {
     // Second use: the state is gone (single use) — and the token is NOT rewritten.
     const second = await GET(makeRequest({ code: "code-5b", state, sid: s.sid }));
     expect(locationOf(second)).toContain("oauth=error");
-    expect(consumeOauthState(state)).toBeNull();
+    expect(
+      await withTenant({ orgId: s.org, userId: s.userId, role: "admin" }, () => consumeOauthState(state))
+    ).toBeNull();
     expect(await storedToken(s.org)).toBe(TEST_TOKEN);
   });
 
