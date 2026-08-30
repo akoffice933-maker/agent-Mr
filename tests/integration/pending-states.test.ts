@@ -14,14 +14,23 @@ import { afterAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, withTenant } from "@/db";
 import { pendingActions } from "@/db/schema";
+import { identityPool } from "@/lib/tenant/pool";
 import { getPendingStates } from "@/lib/agent/run";
 
 const dbUrl = process.env.DATABASE_TEST_URL ?? process.env.DATABASE_URL;
 const d = dbUrl ? describe : describe.skip;
 
 const ctx = { orgId: 1, userId: null, role: "admin" } as const;
-const otherCtx = { orgId: 2, userId: null, role: "admin" } as const;
 const MARKER = "pending-states-test";
+
+// Review bug (found while verifying this commit): the "leaks another org"
+// test originally hardcoded orgId 2 for the foreign organization. Org 1 is
+// the seeded default and always exists, but org 2 is not guaranteed to —
+// other integration test files create organizations dynamically with
+// auto-incrementing ids, so a bare literal 2 depends on run order and fails
+// with a foreign-key violation whenever anything else has already created
+// two or more orgs first. Create it for real instead.
+let foreignOrgId: number;
 
 async function insertPending(status: string, orgId = 1) {
   const [row] = await withTenant({ ...ctx, orgId }, () =>
@@ -44,9 +53,11 @@ async function insertPending(status: string, orgId = 1) {
 
 afterAll(async () => {
   if (!dbUrl) return;
-  for (const org of [1, 2]) {
+  const orgs = [1, ...(foreignOrgId ? [foreignOrgId] : [])];
+  for (const org of orgs) {
     await withTenant({ ...ctx, orgId: org }, () => db.delete(pendingActions).where(eq(pendingActions.source, MARKER)));
   }
+  if (foreignOrgId) await identityPool.query("DELETE FROM organizations WHERE id = $1", [foreignOrgId]);
 });
 
 d("getPendingStates: restoring resolved actions after a reload", () => {
@@ -88,7 +99,13 @@ d("getPendingStates: restoring resolved actions after a reload", () => {
   });
 
   it("NEVER leaks another organization's actions", async () => {
-    const foreign = await insertPending("verified", 2);
+    const org = (await identityPool.query("INSERT INTO organizations (name) VALUES ($1) RETURNING id", [
+      "Pending States Test Org",
+    ])) as { rows: { id: number }[] };
+    foreignOrgId = org.rows[0].id;
+    const otherCtx = { orgId: foreignOrgId, userId: null, role: "admin" } as const;
+
+    const foreign = await insertPending("verified", foreignOrgId);
     const states = await withTenant(ctx, () => getPendingStates());
     expect(states[foreign.id]).toBeUndefined();
 
