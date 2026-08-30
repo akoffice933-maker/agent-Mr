@@ -21,8 +21,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    # Review P2: this used to be `- "5432:5432"`, which binds to 0.0.0.0 and
+    # publishes the database on every interface of the host — with the default
+    # appuser/apppass credentials from this file. On any server with a public
+    # IP that is an open database. The app reaches `db` over the compose
+    # network and needs no published port at all; bind to loopback so local
+    # tooling (psql, a GUI client) still works.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   app:
     build: .

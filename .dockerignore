@@ -1,0 +1,50 @@
+# Review P2: without this file `COPY . .` shipped the whole working tree into
+# the build context — node_modules (hundreds of MB, wrong platform binaries),
+# the .git history, local .env files with real credentials, and the 5.2 MB of
+# demo screenshots/video. Slower builds, fatter images, and secrets baked into
+# layers that anyone with the image can read.
+
+# Dependencies (reinstalled inside the image)
+node_modules
+**/node_modules
+
+# Build artifacts
+.next
+out
+build
+dist
+coverage
+
+# VCS & CI
+.git
+.gitignore
+.github
+
+# Secrets / local env — must NEVER enter an image layer
+.env
+.env.*
+!.env.example
+
+# Local tooling & caches
+.vscode
+.idea
+*.log
+npm-debug.log*
+.DS_Store
+.cache
+.vitest
+.eslintcache
+
+# Tests (not needed at runtime)
+tests
+vitest.config.ts
+
+# Docs & demo assets (5.2 MB of binaries, not used by the app)
+docs
+demo
+*.md
+!README.md
+
+# Sibling packages with their own images/deploys
+telegram-bot
+mcp-server

@@ -21,6 +21,7 @@ import { TENANT_HEADERS } from "@/lib/tenant/request";
 import { getRateLimiter } from "@/lib/rate-limit";
 import { COOKIE_NAME } from "@/lib/auth/sessions";
 import { clientIpOf } from "@/lib/net/client-ip";
+import { roleForScopes } from "@/lib/agent/scopes";
 
 const g = globalThis as typeof globalThis & {
   __userCache?: { at: number; has: boolean };
@@ -100,7 +101,15 @@ async function resolveKeyTenant(key: string): Promise<TenantHeaders | null> {
   const row = (r as { rows: { org_id: number; scopes: string[] | null }[] }).rows[0];
   if (!row) return null;
   await identityPool.query("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1", [hash]);
-  return { "x-tenant-org-id": String(row.org_id), "x-tenant-user-id": null, "x-tenant-role": "admin", "x-tenant-scopes": row.scopes ? JSON.stringify(row.scopes) : null };
+  // Review P2: the role is DERIVED from the key's scopes instead of a blanket
+  // "admin". A read-only key must not satisfy a role check that a scope check
+  // would have rejected — see roleForScopes().
+  return {
+    "x-tenant-org-id": String(row.org_id),
+    "x-tenant-user-id": null,
+    "x-tenant-role": roleForScopes(row.scopes),
+    "x-tenant-scopes": row.scopes ? JSON.stringify(row.scopes) : null,
+  };
 }
 
 /**

@@ -53,13 +53,42 @@ describe("RedisRateLimiter (sliding window, ioredis-mock)", () => {
     await new Promise((r) => setTimeout(r, 200)); // > window
     expect((await rl.check("ip:2", 1, 150)).ok).toBe(true);
   });
-  it("fails OPEN on a Redis error (never blocks the app)", async () => {
-    const rl = new RedisRateLimiter({
-      pipeline: () => {
-        throw new Error("redis down");
-      },
-    } as never);
-    expect((await rl.check("ip:3", 1, 60_000)).ok).toBe(true);
+  // Review P2 — CONTRACT CHANGE. This used to assert `ok: true` on a Redis
+  // error, i.e. an outage disabled rate limiting entirely. Since the login
+  // brute-force guard runs on this abstraction too (P1.3), that turned a Redis
+  // blip into unlimited password attempts. A blip must still not 500 the app,
+  // so it now degrades to the per-instance memory limiter: available, but
+  // still enforcing the policy.
+  describe("Redis outage → degrades to per-instance limiting (not unlimited)", () => {
+    const downRedis = () =>
+      ({
+        pipeline: () => {
+          throw new Error("redis down");
+        },
+        zcount: () => Promise.reject(new Error("redis down")),
+      }) as never;
+
+    it("still allows traffic through (no hard failure)", async () => {
+      const rl = new RedisRateLimiter(downRedis());
+      expect((await rl.check("ip:3", 3, 60_000)).ok).toBe(true);
+    });
+
+    it("but ENFORCES the limit instead of letting everything through", async () => {
+      const rl = new RedisRateLimiter(downRedis());
+      for (let i = 0; i < 3; i++) {
+        expect((await rl.check("ip:4", 3, 60_000)).ok).toBe(true);
+      }
+      // Pre-fix this was `true` forever — the bypass.
+      expect((await rl.check("ip:4", 3, 60_000)).ok).toBe(false);
+    });
+
+    it("peek() degrades the same way and stays side-effect free", async () => {
+      const rl = new RedisRateLimiter(downRedis());
+      for (let i = 0; i < 2; i++) await rl.check("ip:5", 2, 60_000);
+      // Budget is spent: peek must report it, repeatedly and without consuming.
+      expect((await rl.peek("ip:5", 2, 60_000)).ok).toBe(false);
+      expect((await rl.peek("ip:5", 2, 60_000)).ok).toBe(false);
+    });
   });
 });
 

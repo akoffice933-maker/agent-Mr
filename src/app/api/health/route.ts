@@ -14,11 +14,21 @@ export async function GET() {
   } catch {
     dbOk = false;
   }
-  return Response.json({
-    ok: dbOk,
-    db: dbOk,
-    mode: isProductionMode() ? "production" : "development",
-    auth: getApiKey() ? "api-key" : "open",
-    uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-  });
+  // Review P2: this always returned HTTP 200, even with `db: false`. Every
+  // orchestrator (k8s probes, ALB/NLB target groups, uptime monitors) decides
+  // on the STATUS CODE, so a database outage looked perfectly healthy: no
+  // instance was ever restarted or pulled from the load balancer.
+  return Response.json(
+    {
+      ok: dbOk,
+      db: dbOk,
+      mode: isProductionMode() ? "production" : "development",
+      auth: getApiKey() ? "api-key" : "open",
+      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+    },
+    {
+      status: dbOk ? 200 : 503,
+      headers: { "cache-control": "no-store" },
+    }
+  );
 }

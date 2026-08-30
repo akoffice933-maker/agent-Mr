@@ -80,6 +80,13 @@ jobs:
           ENCRYPTION_KEY: ci-only-encryption-key
         run: npm run build
 
+      # Review P2: nothing failed the build on a known-vulnerable dependency,
+      # so advisories were only ever noticed by running `npm audit` by hand.
+      # Production dependencies only — a dev-only advisory should not block a
+      # release, and is surfaced by the Dependabot config instead.
+      - name: Dependency audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+
   clients:
     # mcp-server and telegram-bot are separate packages with their own lockfiles.
     runs-on: ubuntu-latest

@@ -26,7 +26,39 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
 }
 
-const rawPool = new Pool({ connectionString: databaseUrl });
+/**
+ * Connection pool sizing (review P2).
+ *
+ * `new Pool({connectionString})` alone means node-pg's default of max=10 and no
+ * timeouts. That matters here because withTenant() PINS one connection for the
+ * whole request (see below), and an agent request can sit inside an LLM call
+ * for tens of seconds — so 10 concurrent chats exhausted the pool and every
+ * further request queued indefinitely with no error to explain why.
+ *
+ * Explicit limits make the failure mode loud and bounded instead:
+ *   * max                     — cap per instance; keep replicas x max under the
+ *                               server's max_connections;
+ *   * connectionTimeoutMillis — waiting for a free connection fails fast rather
+ *                               than hanging the request forever;
+ *   * idleTimeoutMillis       — release idle connections back to the server;
+ *   * statement_timeout       — server-side ceiling so one pathological query
+ *                               cannot pin a connection indefinitely.
+ */
+const poolMax = Number(process.env.DB_POOL_MAX ?? 10);
+const rawPool = new Pool({
+  connectionString: databaseUrl,
+  max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 10,
+  connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 5_000),
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS ?? 30_000),
+  statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS ?? 30_000),
+});
+
+// A pool error (server restart, idle connection killed by the network) is
+// emitted on the Pool itself; without a listener Node treats it as an unhandled
+// 'error' event and crashes the process.
+rawPool.on("error", (err) => {
+  console.error("[db] idle client error:", err.message);
+});
 
 export interface TenantContext {
   orgId: number;

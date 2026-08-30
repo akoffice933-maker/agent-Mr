@@ -65,6 +65,20 @@ export class MemoryRateLimiter implements RateLimiter {
 
 /** Cross-instance sliding-window log on Redis/Upstash (sorted set per key). */
 export class RedisRateLimiter implements RateLimiter {
+  /**
+   * Per-instance limiter used when Redis is unreachable mid-flight.
+   *
+   * Review P2: both methods used to `return { ok: true }` on a Redis error —
+   * i.e. an outage silently disabled rate limiting everywhere. Since the login
+   * brute-force guard now runs on this abstraction too (P1.3), that turned a
+   * Redis blip into unlimited password attempts.
+   *
+   * Degrading to the in-memory limiter keeps the app available (a blip must not
+   * 500 every request) while still enforcing the policy per instance: with N
+   * replicas an attacker gets at most N x limit instead of infinity.
+   */
+  private fallback = new MemoryRateLimiter();
+
   constructor(private redis: {
     pipeline: () => {
       zremrangebyscore: (k: string, min: number, max: number) => unknown;
@@ -79,11 +93,12 @@ export class RedisRateLimiter implements RateLimiter {
   /** Count entries in the window without adding one. */
   async peek(key: string, limit: number, windowMs = DEFAULT_WINDOW_MS): Promise<RateLimiterResult> {
     try {
+      if (!this.redis.zcount) return this.fallback.peek(key, limit, windowMs);
       const now = Date.now();
-      const count = this.redis.zcount ? await this.redis.zcount(key, now - windowMs, now) : 0;
+      const count = await this.redis.zcount(key, now - windowMs, now);
       return count >= limit ? { ok: false, retryAfterMs: windowMs } : { ok: true };
     } catch {
-      return { ok: true }; // same fail-open posture as check()
+      return this.fallback.peek(key, limit, windowMs);
     }
   }
   async check(key: string, limit: number, windowMs = DEFAULT_WINDOW_MS): Promise<RateLimiterResult> {
@@ -97,16 +112,15 @@ export class RedisRateLimiter implements RateLimiter {
       pipe.zcard(key);
       pipe.pexpire(key, windowMs + 500);
       const results = await pipe.exec();
-      if (!results) return { ok: false, retryAfterMs: windowMs };
+      if (!results) return this.fallback.check(key, limit, windowMs);
       const count = Number(results[2]?.[1] ?? 0);
       if (count <= limit) return { ok: true };
       // Oldest entry in the window defines when a slot frees up.
       return { ok: false, retryAfterMs: windowMs };
     } catch {
-      // Redis blip: fail-open (allow) rather than block the app. The memory
-      // limiter is the selected fallback when Redis is down at startup; a
-      // mid-flight blip here is rare and better served by allowing the request.
-      return { ok: true };
+      // Redis blip: degrade to the per-instance limiter rather than disabling
+      // rate limiting altogether (review P2 — see the `fallback` field).
+      return this.fallback.check(key, limit, windowMs);
     }
   }
 }

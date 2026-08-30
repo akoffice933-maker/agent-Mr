@@ -1,4 +1,16 @@
 # Unified AI Ads Agent — web app (Next.js 16, App Router)
+#
+# Review P2. Three problems with the previous version:
+#   1. the runtime stage did `COPY --from=build /app ./` — the ENTIRE build tree
+#      (source, dev dependencies, tests) shipped to production;
+#   2. it ran as root;
+#   3. migrations ran via `npx drizzle-kit migrate`, a DEV dependency that is
+#      absent from a production install — and whose CLI hides errors behind a
+#      TUI spinner in CI (the reason scripts/migrate.mjs exists in this repo).
+#
+# Now: standalone output, a non-root user, and migrations through the same
+# runner the project already trusts.
+
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
@@ -16,7 +28,36 @@ RUN npm run build
 
 FROM node:20-alpine AS run
 WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
-COPY --from=build /app ./
+# HOSTNAME=0.0.0.0 is REQUIRED: the standalone server.js listens on localhost by
+# default, which inside a container means nothing outside it can connect.
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
+
+# Run as an unprivileged user (the node image ships uid/gid 1000 "node").
+# A container escape or RCE then lands on a user that cannot write the app.
+USER node
+
+# Standalone server + static assets only — no source, no dev dependencies.
+# Note: standalone does NOT include .next/static or public; they must be copied
+# separately or every asset 404s.
+COPY --from=build --chown=node:node /app/.next/standalone ./
+COPY --from=build --chown=node:node /app/.next/static ./.next/static
+COPY --from=build --chown=node:node /app/public ./public
+
+# Migration runner and its SQL. scripts/migrate.mjs uses the drizzle-orm
+# migrator (NOT the drizzle-kit CLI, which is a dev dependency and hides errors
+# behind a TUI spinner in CI — see the header of that script).
+COPY --from=build --chown=node:node /app/scripts/migrate.mjs ./scripts/migrate.mjs
+COPY --from=build --chown=node:node /app/drizzle ./drizzle
+
+# Standalone tracing bundles what the APP imports. src/lib/tenant/pool.ts already
+# imports `pg` and `drizzle-orm/node-postgres`, so both packages (and pg's five
+# transitive deps) are traced in. The one thing the app never imports is the
+# migrator submodule used by scripts/migrate.mjs, so overlay the full
+# drizzle-orm package — it has ZERO dependencies, making this a safe, complete
+# overlay rather than a hand-picked subset.
+COPY --from=deps --chown=node:node /app/node_modules/drizzle-orm ./node_modules/drizzle-orm
+
 EXPOSE 3000
-CMD ["sh", "-c", "npx drizzle-kit migrate && npm start"]
+
+# `server.js` is the standalone entrypoint (replaces `npm start`).
+CMD ["sh", "-c", "node scripts/migrate.mjs && node server.js"]

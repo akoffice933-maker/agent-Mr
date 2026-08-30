@@ -52,7 +52,17 @@ export async function POST(req: Request) {
     );
     // Delivery is intentionally outside this phase. The raw token is returned once
     // so an email/Telegram provider can be attached without storing credentials here.
-    return NextResponse.json({ ok: true, email, role: body.role, token, expiresIn: "7d" }, { status: 201 });
+    //
+    // Review P2: only the sha256 hash is persisted, so this response is the one
+    // and only time the raw token exists — but it is a bearer credential that
+    // grants membership of the organization. `no-store` keeps it out of browser
+    // and intermediary caches; it must never be logged or forwarded.
+    // TODO(P2): once an email/Telegram channel exists, deliver the token there
+    // and drop it from this payload entirely.
+    return NextResponse.json(
+      { ok: true, email, role: body.role, token, expiresIn: "7d" },
+      { status: 201, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } }
+    );
   });
 }
 

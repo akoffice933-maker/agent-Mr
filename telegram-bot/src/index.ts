@@ -30,6 +30,34 @@ if (!TOKEN) {
 const API = process.env.AGENT_API_URL ?? "http://localhost:3000";
 const API_KEY = process.env.AGENT_API_KEY ?? "";
 
+/**
+ * Chat allowlist (review P2).
+ *
+ * A Telegram bot token is a public endpoint: anyone who learns the bot's
+ * @username can message it. This bot holds AGENT_API_KEY — a machine key with
+ * write capabilities — and proxies free text straight to the agent, so without
+ * an allowlist any stranger could read spend reports and approve budget
+ * changes on someone else's ad accounts.
+ *
+ * TELEGRAM_ALLOWED_CHATS is a comma-separated list of numeric chat ids
+ * (a user id for a private chat, a negative id for a group).
+ *
+ * FAIL-CLOSED: if the variable is unset or empty the bot answers nobody and
+ * says so at startup. An open bot must be an explicit choice, never the
+ * default you get by forgetting to configure it.
+ */
+const ALLOWED_CHATS: Set<number> = new Set(
+  (process.env.TELEGRAM_ALLOWED_CHATS ?? "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n !== 0)
+);
+
+export function isChatAllowed(chatId: number | undefined): boolean {
+  if (chatId === undefined) return false;
+  return ALLOWED_CHATS.has(chatId);
+}
+
 const PLAT_LABEL: Record<string, string> = { google: "Google Ads", yandex: "Яндекс.Директ", avito: "Авито" };
 const money = (n: number) => `${new Intl.NumberFormat("ru-RU").format(Math.round(n))} ₽`;
 
@@ -64,6 +92,25 @@ export function createBot(config?: BotConfig<Context>): Bot {
     const text = ctx.message?.text ?? ctx.callbackQuery?.data;
     console.log(`[tg] update=${ctx.update.update_id} chat=${ctx.chat?.id ?? "?"} from=${ctx.from?.username ?? ctx.from?.id ?? "?"} text=${JSON.stringify(text ?? null)}`);
     await next();
+  });
+
+  // Authorization gate (review P2) — MUST stay ahead of every handler, so a
+  // non-allowlisted chat can never reach the agent API. Registered after the
+  // logger on purpose: rejected attempts should still be visible in the log.
+  bot.use(async (ctx, next) => {
+    if (isChatAllowed(ctx.chat?.id)) return next();
+    console.warn(
+      `[tg] BLOCKED chat=${ctx.chat?.id ?? "?"} from=${ctx.from?.username ?? ctx.from?.id ?? "?"} — not in TELEGRAM_ALLOWED_CHATS`
+    );
+    // Answer callback queries so the client's spinner stops, but reveal nothing.
+    if (ctx.callbackQuery) {
+      await ctx.answerCallbackQuery({ text: "Нет доступа." }).catch(() => undefined);
+      return;
+    }
+    await ctx
+      .reply(`Нет доступа. Ваш chat id: ${ctx.chat?.id ?? "неизвестен"} — попросите администратора добавить его в TELEGRAM_ALLOWED_CHATS.`)
+      .catch(() => undefined);
+    // Do NOT call next(): the update stops here.
   });
 
   // bot.command works for real (typed) commands — Telegram tags them with the
@@ -188,8 +235,20 @@ export function createBot(config?: BotConfig<Context>): Bot {
 
 const isMain = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
+  // Loud warning rather than a silent no-op: an operator who forgot to set the
+  // allowlist would otherwise just see a bot that ignores them.
+  if (ALLOWED_CHATS.size === 0) {
+    console.warn(
+      "[agent-mr tg] WARNING: TELEGRAM_ALLOWED_CHATS is empty — the bot will refuse EVERY chat.\n" +
+        "  Message the bot once and copy the chat id it replies with, then set e.g.\n" +
+        "  TELEGRAM_ALLOWED_CHATS=123456789,-1001234567890"
+    );
+  }
   const bot = createBot();
   bot.start({
-    onStart: (me) => console.log(`[agent-mr tg] @${me.username} started, proxying ${API}`),
+    onStart: (me) =>
+      console.log(
+        `[agent-mr tg] @${me.username} started, proxying ${API} (allowed chats: ${ALLOWED_CHATS.size || "none — all blocked"})`
+      ),
   });
 }
