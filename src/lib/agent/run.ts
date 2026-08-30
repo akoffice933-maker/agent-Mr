@@ -14,6 +14,7 @@ import {
   recommendations,
 } from "@/db/schema";
 import { fmtMoney } from "@/lib/format";
+import { checkQuota } from "@/lib/billing/quota";
 import { resolveIntent, mergeRuleSpecIntoLlmParams, WRITE_TOOLS } from "./router";
 import { authorize, type Role } from "./rbac";
 import type { TenantContext } from "@/lib/tenant/pool";
@@ -356,8 +357,20 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
         // 0.6: per-org open-pending cap — a flooded approval queue is a
         // safety smell (unreviewed actions piling up). Reject new writes
         // until the user works through the queue.
-        const openCount = await openPendingCount(org);
-        if (openCount >= MAX_OPEN_PENDING) {
+        // Billing: monthly write quota. Checked BEFORE the action is queued,
+        // so the user is told about the ceiling while deciding — not after
+        // approving something we then refuse to execute. Reads never get here.
+        const quota = await checkQuota(org, "write_actions");
+        const openCount = quota.allowed ? await openPendingCount(org) : 0;
+        if (!quota.allowed) {
+          trace.push({
+            label: `Лимит тарифа: ${quota.used}/${quota.limit} изменений за месяц`,
+            detail: "Новые изменения отклонены до смены тарифа или начала следующего месяца.",
+            status: "warn",
+          });
+          result = { kind: "text", text: quota.reason! };
+          auditStatus = "blocked";
+        } else if (openCount >= MAX_OPEN_PENDING) {
           trace.push({ label: `Очередь подтверждений полна (${openCount}) — новые writes отклонены`, status: "warn" });
           result = {
             kind: "text",

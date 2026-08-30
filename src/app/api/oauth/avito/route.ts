@@ -4,6 +4,7 @@ import { setAccountMode } from "@/lib/adapters/oauth-store";
 import { getAdapter } from "@/lib/adapters";
 import { withTenant } from "@/lib/tenant/pool";
 import { requireActionRole } from "@/lib/tenant/route-authz";
+import { canConnectPlatform } from "@/lib/billing/quota";
 import { parseRole } from "@/lib/agent/rbac";
 import { resolveRequestContext } from "@/lib/tenant/resolve";
 import type { TenantContext } from "@/lib/tenant/pool";
@@ -24,6 +25,15 @@ export async function GET(req: Request) {
       if (!ctx) return NextResponse.redirect(`${errTo}?oauth=error&platform=avito`);
       const denied = requireActionRole(parseRole(ctx.role), "credentials");
       if (denied) return denied;
+      // Billing: connecting a NEW platform consumes a plan slot. Checked at
+      // the START of the flow, before the user is bounced to the provider's
+      // consent screen — telling someone their plan is full only after they
+      // granted access would be a bait-and-switch. Re-connecting an existing
+      // platform stays free (see canConnectPlatform).
+      const quota = await withTenant(ctx, () => canConnectPlatform(ctx.orgId, "avito"));
+      if (!quota.allowed) {
+        return NextResponse.redirect(`${errTo}?oauth=plan_limit&platform=avito`);
+      }
       return await withTenant(ctx, async () => {
         await avitoFetchToken();
         await setAccountMode("avito", "production");

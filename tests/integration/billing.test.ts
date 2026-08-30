@@ -49,7 +49,7 @@ describe("plan table (pure)", () => {
   });
 
   it("pro is strictly more generous than free", () => {
-    expect(PLANS.pro.maxAccounts).toBeGreaterThan(PLANS.free.maxAccounts);
+    expect(PLANS.pro.maxPlatforms).toBeGreaterThan(PLANS.free.maxPlatforms);
     expect(PLANS.pro.maxWriteActionsPerMonth).toBeGreaterThan(PLANS.free.maxWriteActionsPerMonth);
     expect(PLANS.pro.maxMembers).toBeGreaterThan(PLANS.free.maxMembers);
   });

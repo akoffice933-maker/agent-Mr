@@ -6,6 +6,7 @@ import { getSettings, writeAudit } from "@/lib/agent/safety";
 import { withTenantRequest } from "@/lib/tenant/request";
 import { requireAction } from "@/lib/tenant/route-authz";
 import { createPendingAction, resolvePending } from "@/lib/agent/run";
+import { checkQuota } from "@/lib/billing/quota";
 import type { Action } from "@/lib/agent/rbac";
 import { log } from "@/lib/log";
 
@@ -71,6 +72,18 @@ export async function POST(req: Request) {
           summary: `UI: ${body.action} «${camp.name}» — dry-run, изменения не применены`,
         });
         return NextResponse.json({ dryRunBlocked: true });
+      }
+
+      // Billing: the UI button is a write against a live ad account, so it is
+      // metered exactly like an agent action. Checked here rather than inside
+      // createPendingAction because this route executes immediately — the
+      // click is the confirmation — and the user deserves a 402 up front.
+      const quota = await checkQuota(tenantOrgId(), "write_actions");
+      if (!quota.allowed) {
+        return NextResponse.json(
+          { error: "plan_limit", kind: quota.kind, limit: quota.limit, used: quota.used, message: quota.reason },
+          { status: 402 }
+        );
       }
 
       // Map the UI action onto the agent's tool vocabulary so it reuses the

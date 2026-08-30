@@ -16,6 +16,7 @@ const NAV = [
   { href: "/audit", label: "Журнал аудита", icon: "scroll" },
   { href: "/safety", label: "Безопасность", icon: "shield" },
   { href: "/members", label: "Команда", icon: "wallet" },
+  { href: "/billing", label: "Тарифы", icon: "wallet" },
 ];
 
 function SafetyStatus() {

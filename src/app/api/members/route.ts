@@ -4,6 +4,8 @@ import { identityPool } from "@/lib/tenant/pool";
 import { requireAction } from "@/lib/tenant/route-authz";
 import { withTenantRequest } from "@/lib/tenant/request";
 import { ROLES, type Role } from "@/lib/agent/rbac";
+import { checkQuota } from "@/lib/billing/quota";
+import { reserveSeatAndInvite } from "@/lib/members/invite";
 
 export const dynamic = "force-dynamic";
 
@@ -43,13 +45,43 @@ export async function POST(req: Request) {
     if (!email || !/^\S+@\S+\.\S+$/.test(email) || !validRole(body.role)) {
       return NextResponse.json({ error: "bad_request" }, { status: 400 });
     }
+    // Billing: seat limit. This first check is only for a fast, friendly 402 —
+    // it does NOT decide the outcome. Counting in a subselect reserves nothing
+    // under READ COMMITTED, so the authoritative count+insert happens inside
+    // reserveSeatAndInvite() behind a per-org advisory lock.
+    const quota = await checkQuota(ctx.orgId, "members");
+    if (!quota.allowed) {
+      return NextResponse.json(
+        { error: "plan_limit", kind: quota.kind, limit: quota.limit, used: quota.used, message: quota.reason },
+        { status: 402 }
+      );
+    }
+
     const token = `inv_${randomBytes(32).toString("hex")}`;
     const tokenHash = createHash("sha256").update(token).digest("hex");
-    await identityPool.query(
-      `INSERT INTO org_invites (org_id,email,role,token_hash,expires_at)
-       VALUES ($1,$2,$3,$4,now()+interval '7 days')`,
-      [ctx.orgId, email, body.role, tokenHash]
-    );
+    const seat = await reserveSeatAndInvite({
+      orgId: ctx.orgId,
+      email,
+      role: body.role,
+      tokenHash,
+      limit: quota.limit,
+    });
+
+    if (!seat.ok) {
+      // Lost the race for the last seat, or the limit was already reached.
+      const fresh = await checkQuota(ctx.orgId, "members");
+      return NextResponse.json(
+        {
+          error: "plan_limit",
+          kind: "members",
+          limit: fresh.limit,
+          used: fresh.used,
+          message: fresh.reason ?? "Достигнут лимит участников на текущем тарифе.",
+        },
+        { status: 402 }
+      );
+    }
+
     // Delivery is intentionally outside this phase. The raw token is returned once
     // so an email/Telegram provider can be attached without storing credentials here.
     //

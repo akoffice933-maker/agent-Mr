@@ -32,7 +32,9 @@ export default function MembersPage() {
     setError(""); setToken(null);
     const r = await apiFetch("/api/members", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, role }) });
     const d = await r.json();
-    if (!r.ok) return setError(d.error ?? "Ошибка");
+    // `message` carries the human-readable reason (e.g. the plan-limit text);
+    // `error` is the machine code and makes a poor thing to show a user.
+    if (!r.ok) return setError(d.message ?? d.error ?? "Ошибка");
     setToken(d.token); setEmail(""); await load();
   };
 
