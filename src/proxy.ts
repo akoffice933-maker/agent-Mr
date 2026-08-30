@@ -28,7 +28,9 @@ const g = globalThis as typeof globalThis & {
 };
 
 /** Pages reachable without a session (the login screen itself). */
-const PUBLIC_PAGES = new Set(["/login"]);
+// `/verify` is public because the link is opened from an email, often in a
+// different browser than the one holding the session.
+const PUBLIC_PAGES = new Set(["/login", "/signup", "/verify"]);
 
 // Cross-instance rate limiting (Phase 0.2): Redis/Upstash when REDIS_URL is
 // set, in-memory token bucket otherwise (and as fail-open fallback).
@@ -153,12 +155,43 @@ export async function proxy(req: NextRequest) {
   }
 
   // Always-open routes.
-  if (path === "/api/health" || path.startsWith("/api/oauth/")) {
+  //
+  // Billing webhooks are called by Stripe/ЮKassa, which have no session and no
+  // API key. They are NOT unauthenticated in effect: the Stripe handler
+  // verifies an HMAC signature over the raw body, and the ЮKassa handler
+  // re-reads the payment from the provider API before granting anything.
+  if (
+    path === "/api/health" ||
+    path.startsWith("/api/oauth/") ||
+    path.startsWith("/api/billing/webhook/")
+  ) {
     return passThrough();
   }
 
   const authRequired = isAuthRequired();
   const ip = ipOf(req);
+
+  // Signup and email verification: reachable without a session by definition
+  // (the account does not exist yet), so per-IP limits are the abuse control.
+  // Signup is the stricter of the two — each accepted request creates a user,
+  // an organization and sends an email.
+  if (path.startsWith("/api/auth/signup")) {
+    if (req.method === "POST" && !(await allow(`${ip}:signup`, 5))) {
+      return NextResponse.json(
+        { error: "rate_limited", reason: "Слишком много попыток регистрации. Попробуйте через минуту." },
+        { status: 429, headers: { "Retry-After": "60" } }
+      );
+    }
+    return passThrough();
+  }
+  if (path.startsWith("/api/auth/verify")) {
+    // Also guards token guessing: a verification token is 32 random bytes, and
+    // 20 tries/minute makes brute force hopeless rather than merely slow.
+    if (!(await allow(`${ip}:verify`, 20))) {
+      return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": "60" } });
+    }
+    return passThrough();
+  }
 
   // Login endpoint: open (when auth is required) but brute-force limited.
   if (path.startsWith("/api/auth/login")) {

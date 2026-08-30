@@ -327,3 +327,64 @@ export const messages = pgTable("chat_messages", {
   meta: jsonb("meta"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// ── Email verification (self-serve signup) ─────────────────────────────────
+// Only the token HASH is stored: a leaked dump or log line must not yield a
+// working verification link (same discipline as org_invites.token_hash).
+export const emailVerifications = pgTable(
+  "email_verifications",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    consumedAt: timestamp("consumed_at"),
+    sentTo: text("sent_to").notNull(),
+  },
+  (t) => [index("email_verifications_user_idx").on(t.userId)]
+);
+
+// ── Billing ────────────────────────────────────────────────────────────────
+// One subscription per organization (unique index on org_id): the entitlement
+// lookup must never be ambiguous. Provider columns stay nullable so a free org
+// needs no payment-provider account at all.
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    orgId: integer("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    plan: text("plan").notNull().default("free"), // free | pro
+    status: text("status").notNull().default("active"), // active | past_due | canceled
+    provider: text("provider"), // stripe | yookassa | null (free)
+    providerCustomerId: text("provider_customer_id"),
+    providerSubscriptionId: text("provider_subscription_id"),
+    currentPeriodEnd: timestamp("current_period_end"),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("subscriptions_org_unique_idx").on(t.orgId)]
+);
+
+// Raw provider events. Providers RETRY webhooks and can deliver out of order,
+// so the provider's own event id is the idempotency key — the unique index is
+// what makes "charge applied twice" impossible rather than unlikely.
+export const paymentEvents = pgTable(
+  "payment_events",
+  {
+    id: serial("id").primaryKey(),
+    orgId: integer("org_id").references(() => organizations.id, { onDelete: "set null" }),
+    provider: text("provider").notNull(),
+    eventId: text("event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload"),
+    receivedAt: timestamp("received_at").notNull().defaultNow(),
+    processedAt: timestamp("processed_at"),
+  },
+  (t) => [uniqueIndex("payment_events_provider_event_idx").on(t.provider, t.eventId), index("payment_events_org_idx").on(t.orgId)]
+);

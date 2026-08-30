@@ -43,7 +43,24 @@ export const DERIVED_TENANT_TABLES: string[] = ["metrics_daily", "keywords", "ne
 // Identity/credential plane: NO RLS by design (the proxy resolves the tenant
 // context from these tables *before* any context exists). org_id invariants
 // are still enforced structurally (NOT NULL + FK) via ORG_ID_TABLES.
-export const IDENTITY_TABLES: string[] = ["organizations", "org_members", "api_keys", "users", "sessions", "org_invites"];
+// email_verifications: keyed by user_id, not org_id — it is consumed BEFORE any
+//   tenant context exists (the link is opened from an email, often logged out).
+// subscriptions / payment_events: the billing plane. Entitlements are read
+//   while resolving what an org may do, and webhooks arrive with no session at
+//   all — a provider calling in has no tenant context to run under. Access is
+//   confined to src/lib/billing/*, which always filters by an org id derived
+//   from the authenticated context or from a signature-verified payload.
+export const IDENTITY_TABLES: string[] = [
+  "organizations",
+  "org_members",
+  "api_keys",
+  "users",
+  "sessions",
+  "org_invites",
+  "email_verifications",
+  "subscriptions",
+  "payment_events",
+];
 
 // Tables whose org column must stay NOT NULL + FK even without RLS.
 const ORG_ID_TABLES: { table: string; column: string }[] = [
@@ -51,6 +68,9 @@ const ORG_ID_TABLES: { table: string; column: string }[] = [
   { table: "api_keys", column: "org_id" },
   { table: "org_members", column: "org_id" },
   { table: "org_invites", column: "org_id" },
+  // Billing rows must stay bound to a real organization: a subscription whose
+  // org vanished would keep granting a plan to nobody.
+  { table: "subscriptions", column: "org_id" },
 ];
 
 type QueryFn = (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;

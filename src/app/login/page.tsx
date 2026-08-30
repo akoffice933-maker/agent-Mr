@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api-client";
 import { Icon } from "@/components/icons";
@@ -13,6 +13,16 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Whether to offer registration at all: a deployment with SIGNUP_MODE=off
+  // must not show a link that only leads to a refusal.
+  const [signupOpen, setSignupOpen] = useState(false);
+
+  useEffect(() => {
+    apiFetch("/api/auth/signup")
+      .then((r) => r.json())
+      .then((d: { mode?: string }) => setSignupOpen(d.mode !== "off"))
+      .catch(() => setSignupOpen(false));
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +92,15 @@ function LoginForm() {
           >
             {busy ? "Входим…" : "Войти"}
           </button>
+
+          {signupOpen && (
+            <p className="mt-3 text-center text-[11px] text-fog">
+              Нет аккаунта?{" "}
+              <a href="/signup" className="font-semibold text-accent">
+                Зарегистрироваться
+              </a>
+            </p>
+          )}
         </form>
 
         <p className="mt-4 text-center text-[11px] leading-relaxed text-fog">

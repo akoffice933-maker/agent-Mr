@@ -78,6 +78,13 @@
       "when": 1788700000000,
       "tag": "0010_idempotency_active_only",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788700001000,
+      "tag": "0011_signup_and_billing",
+      "breakpoints": true
     }
   ]
 }
