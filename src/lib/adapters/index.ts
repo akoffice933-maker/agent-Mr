@@ -40,17 +40,28 @@ export interface AdapterOutcome {
 
 /** Pull fresh state from all given platforms into the local mirror (no-op in sandbox). */
 export async function syncAdapters(platforms: Platform[]): Promise<AdapterOutcome[]> {
-  const results: AdapterOutcome[] = [];
-  for (const p of [...new Set(platforms)]) {
-    const client = await getAdapter(p);
-    try {
-      await client.sync();
-      results.push({ platform: p, mode: client.isProduction ? "production" : "sandbox", ok: true, verified: true });
-    } catch (e) {
-      results.push({ platform: p, mode: client.isProduction ? "production" : "sandbox", ok: false, verified: false, detail: (e as Error).message });
-    }
-  }
-  return results;
+  // Read-only against each provider (no shared state between platforms), so
+  // this is safe to parallelize — unlike executeAdapters (money writes),
+  // which stays sequential pending a dedicated review pass.
+  const unique = [...new Set(platforms)];
+  const settled = await Promise.allSettled(
+    unique.map(async (p) => {
+      const client = await getAdapter(p);
+      const mode: "sandbox" | "production" = client.isProduction ? "production" : "sandbox";
+      try {
+        await client.sync();
+        return { platform: p, mode, ok: true, verified: true } satisfies AdapterOutcome;
+      } catch (e) {
+        return { platform: p, mode, ok: false, verified: false, detail: (e as Error).message } satisfies AdapterOutcome;
+      }
+    })
+  );
+  // getAdapter() itself can throw (e.g. missing credentials) before the
+  // try/catch above starts — Promise.allSettled catches that as "rejected",
+  // which the per-platform try/catch above doesn't. Surface it the same way.
+  return settled.map((s, i) =>
+    s.status === "fulfilled" ? s.value : { platform: unique[i], mode: "sandbox", ok: false, verified: false, detail: (s.reason as Error)?.message ?? String(s.reason) }
+  );
 }
 
 /**

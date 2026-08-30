@@ -44,6 +44,7 @@ export const campaigns = pgTable(
   },
   (t) => [
     index("campaigns_platform_idx").on(t.platform),
+    index("campaigns_org_platform_ext_idx").on(t.organizationId, t.platform, t.externalId),
     // ON DELETE SET NULL is set by migration 0004 (drizzle v0.45 foreignKey()
     // helper does not expose onDelete for composite FKs).
     foreignKey({
@@ -113,45 +114,53 @@ export const chats = pgTable("avito_chats", {
 });
 
 // ── Audit log ──────────────────────────────────────────────────────────────
-export const auditLog = pgTable("audit_log", {
-  id: serial("id").primaryKey(),
-  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-  ts: timestamp("ts").notNull().defaultNow(),
-  actor: text("actor").notNull().default("chat"), // chat | ui | system
-  tool: text("tool").notNull(),
-  params: jsonb("params"),
-  platforms: text("platforms").notNull().default(""),
-  dryRun: boolean("dry_run").notNull().default(false),
-  status: text("status").notNull().default("ok"), // ok | blocked | pending | applied | rejected | dry_run
-  summary: text("summary").notNull().default(""),
-});
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: serial("id").primaryKey(),
+    organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    ts: timestamp("ts").notNull().defaultNow(),
+    actor: text("actor").notNull().default("chat"), // chat | ui | system
+    tool: text("tool").notNull(),
+    params: jsonb("params"),
+    platforms: text("platforms").notNull().default(""),
+    dryRun: boolean("dry_run").notNull().default(false),
+    status: text("status").notNull().default("ok"), // ok | blocked | pending | applied | rejected | dry_run
+    summary: text("summary").notNull().default(""),
+  },
+  (t) => [index("audit_log_org_ts_idx").on(t.organizationId, t.ts)]
+);
 
 // ── Pending actions (safety confirmations) ─────────────────────────────────
-export const pendingActions = pgTable("pending_actions", {
-  id: serial("id").primaryKey(),
-  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  tool: text("tool").notNull(),
-  params: jsonb("params"),
-  preview: jsonb("preview"),
-  costDaily: doublePrecision("cost_daily"), // extra ₽/day the action adds, for limit re-check on approve
-  // Lifecycle: pending → executing → verified | failed | rejected.
-  status: text("status").notNull().default("pending"),
-  idempotencyKey: text("idempotency_key").unique(),
-  attempts: integer("attempts").notNull().default(0),
-  providerResponse: jsonb("provider_response"), // raw provider response for the write
-  readback: jsonb("readback"), // state read back from the provider after the write
-  lastError: text("last_error"),
-  executedAt: timestamp("executed_at"),
-  verifiedAt: timestamp("verified_at"),
-  source: text("source").notNull().default("chat"),
-  // Phase 0.4: optimistic locking — every lifecycle transition bumps version;
-  // concurrent approvers are serialized by the atomic claim + version check.
-  version: integer("version").notNull().default(0),
-  // Phase 0.5: pending actions expire (approval window 48h); failed actions
-  // stay retryable (idempotent resume) but are also swept after 14 days.
-  expiresAt: timestamp("expires_at"),
-});
+export const pendingActions = pgTable(
+  "pending_actions",
+  {
+    id: serial("id").primaryKey(),
+    organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    tool: text("tool").notNull(),
+    params: jsonb("params"),
+    preview: jsonb("preview"),
+    costDaily: doublePrecision("cost_daily"), // extra ₽/day the action adds, for limit re-check on approve
+    // Lifecycle: pending → executing → verified | failed | rejected.
+    status: text("status").notNull().default("pending"),
+    idempotencyKey: text("idempotency_key").unique(),
+    attempts: integer("attempts").notNull().default(0),
+    providerResponse: jsonb("provider_response"), // raw provider response for the write
+    readback: jsonb("readback"), // state read back from the provider after the write
+    lastError: text("last_error"),
+    executedAt: timestamp("executed_at"),
+    verifiedAt: timestamp("verified_at"),
+    source: text("source").notNull().default("chat"),
+    // Phase 0.4: optimistic locking — every lifecycle transition bumps version;
+    // concurrent approvers are serialized by the atomic claim + version check.
+    version: integer("version").notNull().default(0),
+    // Phase 0.5: pending actions expire (approval window 48h); failed actions
+    // stay retryable (idempotent resume) but are also swept after 14 days.
+    expiresAt: timestamp("expires_at"),
+  },
+  (t) => [index("pending_actions_org_status_idx").on(t.organizationId, t.status)]
+);
 
 // ── OAuth state (DB-backed, multi-instance safe) ───────────────────────────
 export const oauthStates = pgTable(
@@ -287,18 +296,22 @@ export const settings = pgTable(
 );
 
 // ── Recommendations ────────────────────────────────────────────────────────
-export const recommendations = pgTable("recommendations", {
-  id: serial("id").primaryKey(),
-  organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-  platform: text("platform").notNull(),
-  campaignId: integer("campaign_id").references(() => campaigns.id),
+export const recommendations = pgTable(
+  "recommendations",
+  {
+    id: serial("id").primaryKey(),
+    organizationId: integer("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    campaignId: integer("campaign_id").references(() => campaigns.id),
     type: text("type").notNull(),
     description: text("description").notNull(),
     impact: text("impact").notNull().default(""),
     params: jsonb("params"), // machine-readable effect params (e.g. budget_shift {from,to,percent})
     status: text("status").notNull().default("open"), // open | applied | dismissed
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("recommendations_org_status_idx").on(t.organizationId, t.status)]
+);
 
 // ── Chat messages ──────────────────────────────────────────────────────────
 export const messages = pgTable("chat_messages", {

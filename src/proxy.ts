@@ -42,9 +42,11 @@ function isWriteRoute(req: NextRequest): boolean {
 // (or the header entirely) to rotate IPs and bypass the limits. Now we only
 // trust XFF when it demonstrably comes from a configured reverse proxy.
 //
-// Deployment note: put the app behind a proxy that SETS/OVERWRITES
-// X-Forwarded-For, list that proxy (and /or its CIDR) in TRUSTED_PROXY, and do
-// not expose the app directly.
+// Deployment note: put the app behind a proxy that APPENDS its own address
+// as the last X-Forwarded-For hop (not a bare overwrite — that yields a
+// single hop, which this code never trusts by design; see .env.example for
+// the exact nginx directive), list that proxy (and/or its CIDR) in
+// TRUSTED_PROXY, and do not expose the app directly.
 
 /** Parse an IPv4 "a.b.c.d" to a 32-bit unsigned integer, or null. */
 function ipv4ToLong(ip: string): number | null {
@@ -231,12 +233,25 @@ export async function proxy(req: NextRequest) {
     }
   }
 
-  // General rate limits (applies in all modes).
+  // General rate limits (applies in all modes). Per-IP first (existing
+  // behavior, unchanged), then an additive per-org cap (review M2 P2): a
+  // single tenant sharing an IP with others (corporate NAT, VPN exit node)
+  // must not be able to exhaust everyone else's per-IP bucket, and a tenant
+  // rotating across many IPs must not bypass a ceiling on its own total
+  // usage. Same limit values as the per-IP check for now — a fleet with
+  // many concurrent users per org may want a separate, higher org ceiling;
+  // tune independently once real traffic shape is known.
   const write = isWriteRoute(req);
   const limit = write ? 20 : 120;
   if (!(await allow(`${ip}:${write ? "w" : "r"}`, limit))) {
     return NextResponse.json(
       { error: "rate_limited", message: "Слишком много запросов — повторите через минуту." },
+      { status: 429, headers: { "Retry-After": "60" } }
+    );
+  }
+  if (!(await allow(`org:${tenant["x-tenant-org-id"]}:${write ? "w" : "r"}`, limit))) {
+    return NextResponse.json(
+      { error: "rate_limited", message: "Слишком много запросов от вашей организации — повторите через минуту." },
       { status: 429, headers: { "Retry-After": "60" } }
     );
   }

@@ -64,6 +64,13 @@
       "when": 1788600000000,
       "tag": "0008_drop_users_role",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788098458624,
+      "tag": "0009_missing_indexes",
+      "breakpoints": true
     }
   ]
 }
