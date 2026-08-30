@@ -29,6 +29,7 @@ import { persistBudgetShift, suggestBudgetShift } from "./cross-platform-advisor
 import { executeAdapters, syncAdapters } from "@/lib/adapters";
 import type { AdapterOutcome } from "@/lib/adapters";
 import type { WriteOp } from "@/lib/adapters/types";
+import { log } from "@/lib/log";
 
 const TOOL_DESC: Record<string, string> = {
   get_spend_report: "сводный расход по платформам",
@@ -402,43 +403,55 @@ export async function runAgent(raw: string, actor: "chat" | "ui" = "chat", ctx?:
   return { user: serializeMessage(userRow), agent: agentRow };
 }
 
+/**
+ * Tool name -> implementation.
+ *
+ * Review P3: this was a hand-written switch parallel to TOOL_META. Two lists of
+ * the same tools drift, and the drift is silent in the dangerous direction: a
+ * tool declared in TOOL_META (so the Policy Engine authorises it, RBAC assigns
+ * it an action class, and the LLM is told it exists) but missing from the
+ * switch falls through to `fallback()` — the user gets "не понял запрос" for a
+ * tool the system just approved, with no error anywhere.
+ *
+ * As a lookup table the two lists can be compared mechanically, which
+ * tests/unit/tool-registry.test.ts does: every TOOL_META entry must have a
+ * handler and vice versa. Adding a tool to only one of the two now fails CI
+ * instead of shipping.
+ */
+export const TOOL_HANDLERS: Record<string, (intent: ParsedIntent) => Promise<tools.ToolOutput>> = {
+  // Reads / analytics
+  get_spend_report: (i) => tools.getSpendReport(i),
+  compare_cpa: (i) => tools.compareCpa(i),
+  list_campaigns: (i) => tools.listCampaigns(i),
+  get_keyword_performance: (i) => tools.getKeywordPerformance(i),
+  get_avito_chat_summary: (i) => tools.getAvitoChatSummary(i),
+  run_account_audit: (i) => tools.runAccountAudit(i),
+  list_recommendations: () => tools.listRecommendations(),
+  help: () => tools.help(),
+  fallback: () => tools.fallback(),
+  // Writes
+  pause_low_ctr_campaigns: (i) => tools.pauseLowCtrCampaigns(i),
+  set_campaign_status: (i) => tools.setCampaignStatus(i),
+  adjust_bids: (i) => tools.adjustBids(i),
+  create_campaign: (i) => tools.createCampaign(i),
+  delete_created_campaign: (i) => tools.deleteCreatedCampaign(i),
+  promote_low_view_listings: (i) => tools.promoteLowViewListings(i),
+  add_negative_keywords: (i) => tools.addNegativeKeywords(i),
+  apply_recommendation: (i) => tools.applyRecommendation(i),
+};
+
 async function dispatch(tool: string, intent: ParsedIntent, _settings: SafetySettings): Promise<tools.ToolOutput> {
-  switch (tool) {
-    case "get_spend_report":
-      return tools.getSpendReport(intent);
-    case "compare_cpa":
-      return tools.compareCpa(intent);
-    case "list_campaigns":
-      return tools.listCampaigns(intent);
-    case "get_keyword_performance":
-      return tools.getKeywordPerformance(intent);
-    case "get_avito_chat_summary":
-      return tools.getAvitoChatSummary(intent);
-    case "run_account_audit":
-      return tools.runAccountAudit(intent);
-    case "pause_low_ctr_campaigns":
-      return tools.pauseLowCtrCampaigns(intent);
-    case "set_campaign_status":
-      return tools.setCampaignStatus(intent);
-    case "adjust_bids":
-      return tools.adjustBids(intent);
-    case "create_campaign":
-      return tools.createCampaign(intent);
-    case "delete_created_campaign":
-      return tools.deleteCreatedCampaign(intent);
-    case "promote_low_view_listings":
-      return tools.promoteLowViewListings(intent);
-    case "add_negative_keywords":
-      return tools.addNegativeKeywords(intent);
-    case "list_recommendations":
-      return tools.listRecommendations();
-    case "apply_recommendation":
-      return tools.applyRecommendation(intent);
-    case "help":
-      return tools.help();
-    default:
-      return tools.fallback();
+  const handler = TOOL_HANDLERS[tool];
+  if (!handler) {
+    // An unknown tool name reaching dispatch means the parser produced
+    // something the registry does not implement. Log it loudly — under the old
+    // switch this was indistinguishable from a genuine "didn't understand".
+    if (tool && tool !== "fallback") {
+      log.warn("dispatch.unknown_tool", { tool });
+    }
+    return tools.fallback();
   }
+  return handler(intent);
 }
 
 function briefSummary(result: ResultPayload): string {

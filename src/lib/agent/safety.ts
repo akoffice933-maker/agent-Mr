@@ -106,6 +106,37 @@ export async function spendSince(days: number): Promise<number> {
   return Number(rows[0]?.total ?? 0);
 }
 
+/**
+ * Today's / 7-day / 30-day spend in a SINGLE pass over metrics_daily.
+ *
+ * Review P3: checkBudgetHeadroom() called spendSince() three times, so every
+ * budget-guarded action issued three sequential aggregates over the same table
+ * for three nested date ranges. Conditional aggregation (FILTER) computes all
+ * three in one scan — and, more importantly, from ONE consistent snapshot: the
+ * separate queries could interleave with a metrics sync and return a weekly
+ * total that excluded spend already counted in the daily total.
+ *
+ * The widest range bounds the scan, and the narrower ones are FILTERed out of
+ * the same rows.
+ */
+export async function spendWindows(): Promise<{ today: number; week: number; month: number }> {
+  const from1 = dateNDaysAgo(0);
+  const from7 = dateNDaysAgo(6);
+  const from30 = dateNDaysAgo(29);
+
+  const rows = await db
+    .select({
+      today: sql<number>`coalesce(sum(${metricsDaily.spend}) filter (where ${metricsDaily.date} >= ${from1}), 0)`,
+      week: sql<number>`coalesce(sum(${metricsDaily.spend}) filter (where ${metricsDaily.date} >= ${from7}), 0)`,
+      month: sql<number>`coalesce(sum(${metricsDaily.spend}), 0)`,
+    })
+    .from(metricsDaily)
+    .where(sql`${metricsDaily.date} >= ${from30}`);
+
+  const r = rows[0];
+  return { today: Number(r?.today ?? 0), week: Number(r?.week ?? 0), month: Number(r?.month ?? 0) };
+}
+
 export interface BudgetCheck {
   ok: boolean;
   reason?: string;
@@ -121,10 +152,10 @@ function ru(n: number): string {
 
 /** Checks whether `additionalDaily` ₽/day of new spend fits daily, weekly and monthly limits (ТЗ 10). */
 export async function checkBudgetHeadroom(additionalDaily: number): Promise<BudgetCheck> {
-  const s = await getSettings();
-  const spendToday = await spendSince(1);
-  const spendWeek = await spendSince(7);
-  const spendMonth = await spendSince(30);
+  // Settings and spend are independent reads — fetch them concurrently, and
+  // get all three spend windows from one consistent scan (see spendWindows).
+  const [s, spend] = await Promise.all([getSettings(), spendWindows()]);
+  const { today: spendToday, week: spendWeek, month: spendMonth } = spend;
   const base = { spendToday, spendWeek, spendMonth, limit: s.dailyLimit };
   const limit = s.dailyLimit;
   if (spendToday + additionalDaily > limit) {

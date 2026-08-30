@@ -39,10 +39,33 @@ export async function buildSessionContext(): Promise<SessionContext> {
   // Platforms mentioned in the recent dialog
   const platforms = (Object.keys(PLATFORM_HINTS) as Platform[]).filter((p) => PLATFORM_HINTS[p].test(recentText));
 
-  // Campaign names mentioned in the recent dialog
-  const allCamps = await db.select({ id: campaigns.id, name: campaigns.name, platform: campaigns.platform }).from(campaigns);
+  // Campaign names mentioned in the recent dialog.
+  //
+  // Review P3 flagged this as "loads every campaign into JS on each message".
+  // It does — but the case-insensitive match MUST stay in JavaScript.
+  //
+  // DO NOT push this into SQL with lower()/ILIKE. PostgreSQL's case folding is
+  // locale-dependent: under the C collation (what `initdb` produces by default
+  // in several images, including the one this project runs on) lower() only
+  // folds ASCII, so lower('ЛЕТНЯЯ') = 'ЛЕТНЯЯ' and ILIKE never matches
+  // Cyrillic. This product is Russian-first — Yandex Direct and Avito
+  // campaigns are overwhelmingly named in Cyrillic — so a SQL rewrite silently
+  // stops recognising almost every real campaign name, and does it quietly:
+  // no error, the agent just forgets what you were talking about. (Measured on
+  // this database: datcollate=C, and the ICU collations are not available.)
+  // JavaScript's toLowerCase() is Unicode-correct regardless of DB locale.
+  //
+  // What IS fixed here is the unbounded scan: only three columns are selected
+  // and the result set is capped, so memory stays flat as an account grows
+  // instead of scaling with the campaign count.
+  const scanLimit = Number(process.env.SESSION_CONTEXT_SCAN_LIMIT ?? 1000);
+  const candidates = await db
+    .select({ id: campaigns.id, name: campaigns.name, platform: campaigns.platform })
+    .from(campaigns)
+    .orderBy(desc(campaigns.id))
+    .limit(Number.isFinite(scanLimit) && scanLimit > 0 ? scanLimit : 1000);
   const lower = recentText.toLowerCase();
-  const campaignNames = allCamps
+  const campaignNames = candidates
     .filter((c) => c.name.length > 4 && lower.includes(c.name.toLowerCase()))
     .slice(0, 5)
     .map((c) => `${c.name} (${PLATFORM_LABEL[c.platform as Platform]})`);
@@ -69,17 +92,11 @@ export async function buildSessionContext(): Promise<SessionContext> {
   };
 }
 
-// Helpers reused by the LLM intent mapper for entity resolution.
-export function findCampaignByName(name: string, platform?: Platform): Promise<{ id: number; name: string; platform: string; status: string } | null> {
-  const norm = name.trim().toLowerCase();
-  return (async () => {
-    const rows = await db.select().from(campaigns);
-    const exact = rows.find((c) => c.name.toLowerCase() === norm);
-    if (exact) return exact;
-    const partial = rows.filter((c) => c.name.toLowerCase().includes(norm) || norm.includes(c.name.toLowerCase()));
-    const pool = platform ? partial.filter((c) => c.platform === platform) : partial;
-    return pool[0] ?? null;
-  })();
-}
+// Review P3: `findCampaignByName()` was removed. It SELECTed every campaign of
+// the organization and did exact/partial matching in JS, and nothing in the
+// repository called it — the LLM intent mapper it was written for resolves
+// campaigns through its own path. Deleting dead code beats optimising it; if
+// name resolution is needed again, do the matching in SQL (ILIKE on an indexed
+// column) rather than pulling the table into memory.
 
 export { inArray };

@@ -80,15 +80,12 @@ export async function getUserByEmail(email: string) {
   return rows[0] ?? null;
 }
 
-export async function userExists(): Promise<boolean> {
-  const rows = await db.select({ id: users.id }).from(users).limit(1);
-  return rows.length > 0;
-}
-
-export async function countUsers(): Promise<number> {
-  const rows = await db.select({ id: users.id }).from(users);
-  return rows.length;
-}
+// Review P3: `userExists()` and `countUsers()` were removed — nothing in the
+// repository called them. `countUsers()` was also the finding itself: it
+// SELECTed every row and returned `rows.length`, so counting users meant
+// loading the whole table into JS. Rather than optimise it into a
+// `count(*)`, the honest fix for dead code is to delete it; the proxy's own
+// "does any user exist?" probe already runs a `SELECT 1 ... LIMIT 1`.
 
 // ── Brute-force guard ───────────────────────────────────────────────────────
 //
