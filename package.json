@@ -35,7 +35,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "0.31.10",
-    "eslint": "9.39.4",
+    "eslint": "10.9.1",
     "eslint-config-next": "16.2.6",
     "ioredis-mock": "^8.13.1",
     "pg-embedded": "^0.2.3",
