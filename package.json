@@ -12,8 +12,8 @@
     "seed": "tsx src/db/seed.ts",
     "create-user": "tsx src/db/create-user.ts",
     "audit:rls": "tsx scripts/rls-audit.ts",
-    "test:integration": "vitest run",
-    "api-keys": "tsx src/db/api-keys.ts"
+    "api-keys": "tsx src/db/api-keys.ts",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "dotenv": "17.3.1",

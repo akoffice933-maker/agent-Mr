@@ -5,6 +5,7 @@ import type { Platform } from "@/lib/agent/types";
 import { withTenantRequest } from "@/lib/tenant/request";
 import { tenantOrgId } from "@/lib/tenant/pool";
 import { requireAction } from "@/lib/tenant/route-authz";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +35,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ ...s, platforms: await Promise.all(platforms) });
     });
   } catch (e) {
-    console.error("settings error", e);
+    log.error("settings request failed", {}, e);
     return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }
@@ -80,7 +81,7 @@ export async function POST(req: Request) {
       return NextResponse.json(s);
     });
   } catch (e) {
-    console.error("settings error", e);
+    log.error("settings request failed", {}, e);
     return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }

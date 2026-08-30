@@ -5,6 +5,8 @@
 // Env: METRIKA_API_KEY (Метрика → Настройки → API-ключи, scope statistic:read),
 //      METRIKA_COUNTER_ID, METRIKA_GOAL_ID (default 1).
 
+import { log } from "@/lib/log";
+
 export interface MetrikaDay {
   date: string; // YYYY-MM-DD
   conversions: number;
@@ -46,7 +48,7 @@ export async function fetchDailyConversions(from: string, to: string): Promise<M
     }),
   });
   if (!res.ok) {
-    console.error(`[metrika] API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    log.warn("metrika api error", { status: res.status, body: (await res.text()).slice(0, 200) });
     return [];
   }
   const d = (await res.json()) as { result?: MetrikaRow[] };

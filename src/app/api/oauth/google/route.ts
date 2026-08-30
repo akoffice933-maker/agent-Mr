@@ -8,6 +8,7 @@ import { requireActionRole } from "@/lib/tenant/route-authz";
 import { parseRole } from "@/lib/agent/rbac";
 import { resolveRequestContext, resolveSessionContext } from "@/lib/tenant/resolve";
 import type { TenantContext } from "@/lib/tenant/pool";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -52,12 +53,12 @@ export async function GET(req: Request) {
       try {
         await (await getAdapter("google")).sync();
       } catch (e) {
-        console.error("post-oauth sync failed (google):", (e as Error).message);
+        log.warn("post-oauth sync failed", { platform: "google" }, e);
       }
       return NextResponse.redirect(backTo);
     });
   } catch (e) {
-    console.error("google oauth error", e);
+    log.error("oauth callback failed", { platform: "google" }, e);
     return NextResponse.redirect(`${errTo}?oauth=error&platform=google`);
   }
 }

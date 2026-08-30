@@ -29,6 +29,7 @@ import { db, currentTenant, tenantOrgId } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { registerRefresher, storeToken, getToken, type StoredToken } from "../oauth-store";
 import type { DailyMetric, PlatformClient, ExecutionResult, WriteOp } from "../types";
+import { log } from "@/lib/log";
 
 const BASE = "https://api.avito.ru";
 
@@ -186,7 +187,7 @@ async function fetchItemStats(itemIds: number[]): Promise<Map<number, { date: st
         out.set(Number(it.itemId), (it.stats ?? []).map((s) => ({ date: String(s.date ?? "").slice(0, 10), views: Number(s.uniqViews ?? 0), contacts: Number(s.uniqContacts ?? 0) })));
       }
     } catch (e) {
-      console.error("avito stats batch failed:", (e as Error).message);
+      log.warn("avito stats batch failed", { platform: "avito" }, e);
     }
   }
   return out;

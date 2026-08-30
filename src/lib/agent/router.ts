@@ -8,6 +8,7 @@ import { isLlmConfigured, llmChat, llmModel, type LLMMessage } from "./llm-clien
 import { LLM_TOOLS, KNOWN_TOOLS } from "./tools-schema";
 import { systemPrompt } from "./prompts/system";
 import type { SessionContext } from "./session-context";
+import { log } from "@/lib/log";
 
 export interface ParsedPeriod {
   days: number;
@@ -484,14 +485,14 @@ export async function resolveIntent(text: string, ctx: SessionContext): Promise<
       if (intent && intent.tool !== "create_campaign") {
         const rules = parseIntent(text);
         if (rules.tool === "create_campaign") {
-          console.warn(`[router] LLM picked "${intent.tool}" but the text is an explicit create_campaign spec — using rules`);
+          log.warn("LLM intent overridden by explicit create_campaign spec", { tool: intent.tool });
           return { intent: rules, engine: "rules", llmError: `llm misfire (${intent.tool}) on explicit create spec` };
         }
       }
       if (intent) return { intent, engine: "llm", model: llmModel() };
     } catch (e) {
       const msg = (e as Error).message;
-      console.error("[router] LLM intent failed, falling back to rules:", msg);
+      log.warn("LLM intent failed, falling back to deterministic rules", { reason: msg });
       return { intent: parseIntent(text), engine: "rules", llmError: msg };
     }
   }

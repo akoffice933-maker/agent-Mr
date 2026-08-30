@@ -7,6 +7,7 @@ import { requireActionRole } from "@/lib/tenant/route-authz";
 import { parseRole } from "@/lib/agent/rbac";
 import { resolveRequestContext } from "@/lib/tenant/resolve";
 import type { TenantContext } from "@/lib/tenant/pool";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -29,14 +30,14 @@ export async function GET(req: Request) {
         try {
           await (await getAdapter("avito")).sync();
         } catch (e) {
-          console.error("post-oauth sync failed (avito):", (e as Error).message);
+          log.warn("post-oauth sync failed", { platform: "avito" }, e);
         }
         return NextResponse.redirect(backTo);
       });
     }
     return NextResponse.redirect(backTo);
   } catch (e) {
-    console.error("avito oauth error", e);
+    log.error("oauth callback failed", { platform: "avito" }, e);
     return NextResponse.redirect(`${errTo}?oauth=error&platform=avito`);
   }
 }

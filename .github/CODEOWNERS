@@ -1,0 +1,36 @@
+# Review P2: nothing enforced a second pair of eyes on the most dangerous
+# files. CODEOWNERS makes GitHub request a review automatically when a PR
+# touches them.
+#
+# NOTE: this only has effect once the paths below have a real owner. Replace
+# @akoffice933-maker with a team (e.g. @org/security) if one exists, and enable
+# "Require review from Code Owners" in the branch protection rules for `main`.
+
+# Default owner for everything not matched below.
+*                               @akoffice933-maker
+
+# ── Security-critical: tenant isolation, auth, crypto ───────────────────────
+/src/proxy.ts                   @akoffice933-maker
+/src/lib/auth/                  @akoffice933-maker
+/src/lib/tenant/                @akoffice933-maker
+/src/lib/crypto.ts              @akoffice933-maker
+/src/lib/auth-policy.ts         @akoffice933-maker
+/src/lib/net/                   @akoffice933-maker
+/src/lib/fetch-safe.ts          @akoffice933-maker
+
+# ── Money path: policy, RBAC, safety interlocks, execution ──────────────────
+/src/lib/agent/policy.ts        @akoffice933-maker
+/src/lib/agent/rbac.ts          @akoffice933-maker
+/src/lib/agent/safety.ts        @akoffice933-maker
+/src/lib/agent/scopes.ts        @akoffice933-maker
+/src/lib/adapters/              @akoffice933-maker
+
+# ── Schema & migrations: irreversible in production ─────────────────────────
+/drizzle/                       @akoffice933-maker
+/src/db/schema.ts               @akoffice933-maker
+
+# ── CI, deployment and security policy ──────────────────────────────────────
+/.github/                       @akoffice933-maker
+/Dockerfile                     @akoffice933-maker
+/docker-compose.yml             @akoffice933-maker
+/SECURITY.md                    @akoffice933-maker

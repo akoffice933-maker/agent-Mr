@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { dateNDaysAgo, todayISO } from "@/lib/format";
 import { withTenantRequest } from "@/lib/tenant/request";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -67,7 +68,7 @@ export async function GET(req: Request) {
       });
     });
   } catch (e) {
-    console.error("campaigns error", e);
+    log.error("campaigns fetch failed", {}, e);
     return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }

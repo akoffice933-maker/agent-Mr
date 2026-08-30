@@ -4,6 +4,7 @@ import { db, currentTenant, tenantOrgId } from "@/db";
 import { accounts, oauthTokens } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/crypto";
 import type { Platform } from "@/lib/agent/types";
+import { log } from "@/lib/log";
 
 export interface StoredToken {
   accessToken: string;
@@ -71,7 +72,7 @@ export async function getToken(org: number, platform: Platform, allowRefresh = t
         await storeToken(org, platform, token);
         return token;
       } catch (e) {
-        console.error(`[oauth-store] refresh failed for ${platform}:`, (e as Error).message);
+        log.error("oauth token refresh failed", { platform }, e);
         return null;
       }
     }

@@ -7,6 +7,7 @@ import { withTenantRequest } from "@/lib/tenant/request";
 import { requireAction } from "@/lib/tenant/route-authz";
 import { createPendingAction, resolvePending } from "@/lib/agent/run";
 import type { Action } from "@/lib/agent/rbac";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -111,7 +112,7 @@ export async function POST(req: Request) {
       });
     });
   } catch (e) {
-    console.error("campaign action error", e);
+    log.error("ui campaign action failed", {}, e);
     return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }

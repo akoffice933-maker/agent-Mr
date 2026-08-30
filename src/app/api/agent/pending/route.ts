@@ -5,6 +5,7 @@ import { pendingActions } from "@/db/schema";
 import { withTenantRequest } from "@/lib/tenant/request";
 import { tenantOrgId } from "@/lib/tenant/pool";
 import { sweepExpiredPending } from "@/lib/agent/run";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ items });
     });
   } catch (e) {
-    console.error("pending error", e);
+    log.error("pending actions fetch failed", {}, e);
     return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }

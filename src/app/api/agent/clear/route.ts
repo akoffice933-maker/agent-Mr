@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { messages } from "@/db/schema";
 import { withTenantRequest } from "@/lib/tenant/request";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true });
     });
   } catch (e) {
-    console.error("clear error", e);
+    log.error("agent clear failed", {}, e);
     return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }

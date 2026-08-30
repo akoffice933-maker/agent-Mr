@@ -18,6 +18,7 @@ import { AsyncLocalStorage } from "async_hooks";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { isProductionMode } from "@/lib/auth-policy";
+import { log } from "@/lib/log";
 
 // Test hook: integration tests run against DATABASE_TEST_URL (the plain
 // DATABASE_URL in unit tests is a dummy for module loading only).
@@ -57,7 +58,7 @@ const rawPool = new Pool({
 // emitted on the Pool itself; without a listener Node treats it as an unhandled
 // 'error' event and crashes the process.
 rawPool.on("error", (err) => {
-  console.error("[db] idle client error:", err.message);
+  log.error("db idle client error", {}, err);
 });
 
 export interface TenantContext {

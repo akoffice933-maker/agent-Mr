@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runAgent } from "@/lib/agent/run";
 import { withTenantRequest } from "@/lib/tenant/request";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ user, agent });
     });
   } catch (e) {
-    console.error("agent chat error", e);
+    log.error("agent chat failed", {}, e);
     return NextResponse.json({ error: "internal" }, { status: 500 });
   }
 }
