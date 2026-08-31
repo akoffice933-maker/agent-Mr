@@ -6,6 +6,7 @@
 //   authMode=on + 401     → redirect to /login?next=<path>
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { isPublicPage } from "@/lib/public-routes";
 
 export interface AuthUser {
   id: number;
@@ -52,7 +53,7 @@ export function AuthGuard({ children }: { children: ReactNode }) {
         store.user = d.user ?? null;
         store.listeners.forEach((fn) => fn());
         setState("ok");
-      } else if (pathname !== "/login") {
+      } else if (!isPublicPage(pathname)) {
         store.authMode = "on";
         setState("redirecting");
         router.replace(`/login?next=${encodeURIComponent(pathname)}`);
@@ -65,7 +66,7 @@ export function AuthGuard({ children }: { children: ReactNode }) {
     };
   }, [pathname, router]);
 
-  if (pathname === "/login") return <>{children}</>;
+  if (isPublicPage(pathname)) return <>{children}</>;
   if (state === "checking" || state === "redirecting") {
     return (
       <div className="flex min-h-screen items-center justify-center">

@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch } from "@/lib/api-client";
 import { Icon } from "@/components/icons";
 
@@ -12,6 +12,11 @@ interface SignupConfig {
 
 function SignupForm() {
   const router = useRouter();
+  // Тариф, выбранный на лендинге (/signup?plan=pro, ТЗ §5.1 п.6). Проверять
+  // право на план здесь нечего: оплата и лимиты живут на сервере (quota.ts),
+  // параметр лишь решает, куда отправить человека после регистрации.
+  const params = useSearchParams();
+  const wantsPro = params.get("plan") === "pro";
   const [cfg, setCfg] = useState<SignupConfig | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -53,7 +58,7 @@ function SignupForm() {
         setManualToken(d.verificationToken);
         return;
       }
-      router.replace("/agent");
+      router.replace(wantsPro ? "/billing?plan=pro" : "/agent");
       router.refresh();
     } catch {
       setError("Сетевая ошибка — попробуйте ещё раз");
@@ -95,7 +100,7 @@ function SignupForm() {
             {link}
           </a>
           <button
-            onClick={() => router.replace("/agent")}
+            onClick={() => router.replace(wantsPro ? "/billing?plan=pro" : "/agent")}
             className="mt-4 w-full rounded-lg bg-accent py-2.5 text-sm font-bold text-accent-ink"
           >
             Продолжить в систему

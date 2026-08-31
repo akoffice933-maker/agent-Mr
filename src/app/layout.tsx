@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Manrope, Space_Grotesk } from "next/font/google";
-import { Sidebar } from "@/components/sidebar";
-import { AuthGuard } from "@/components/auth-guard";
+import { Chrome } from "@/components/chrome";
 import "./globals.css";
 
 const manrope = Manrope({ subsets: ["latin", "cyrillic"], variable: "--font-manrope" });
@@ -18,14 +17,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru" className={`${manrope.variable} ${grotesk.variable}`}>
       <body className="antialiased">
-        <AuthGuard>
-          <div className="flex min-h-screen">
-            <Sidebar />
-            <main className="min-w-0 flex-1 lg:pl-64">
-              <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6 lg:px-8">{children}</div>
-            </main>
-          </div>
-        </AuthGuard>
+        <Chrome>{children}</Chrome>
       </body>
     </html>
   );

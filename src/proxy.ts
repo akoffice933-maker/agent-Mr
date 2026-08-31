@@ -22,15 +22,16 @@ import { getRateLimiter } from "@/lib/rate-limit";
 import { COOKIE_NAME } from "@/lib/auth/sessions";
 import { clientIpOf } from "@/lib/net/client-ip";
 import { roleForScopes } from "@/lib/agent/scopes";
+import { PUBLIC_PAGES } from "@/lib/public-routes";
 
 const g = globalThis as typeof globalThis & {
   __userCache?: { at: number; has: boolean };
 };
 
-/** Pages reachable without a session (the login screen itself). */
-// `/verify` is public because the link is opened from an email, often in a
-// different browser than the one holding the session.
-const PUBLIC_PAGES = new Set(["/login", "/signup", "/verify"]);
+// Pages reachable without a session — shared with the client guard and the
+// app shell so the three can never drift (src/lib/public-routes.ts).
+// `/` is in that list because it is now a router, not the dashboard: it sends
+// a visitor with a session to /dashboard and everyone else to /welcome.
 
 // Cross-instance rate limiting (Phase 0.2): Redis/Upstash when REDIS_URL is
 // set, in-memory token bucket otherwise (and as fail-open fallback).
@@ -160,8 +161,11 @@ export async function proxy(req: NextRequest) {
   // API key. They are NOT unauthenticated in effect: the Stripe handler
   // verifies an HMAC signature over the raw body, and the ЮKassa handler
   // re-reads the payment from the provider API before granting anything.
+  // `/api/public/*` serves compile-time constants (plan prices and limits) and
+  // touches neither the database nor tenant data — see app/api/public/plans.
   if (
     path === "/api/health" ||
+    path.startsWith("/api/public/") ||
     path.startsWith("/api/oauth/") ||
     path.startsWith("/api/billing/webhook/")
   ) {

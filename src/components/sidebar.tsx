@@ -8,7 +8,7 @@ import { apiFetch } from "@/lib/api-client";
 import { getAuth, subscribeAuth } from "./auth-guard";
 
 const NAV = [
-  { href: "/", label: "Обзор", icon: "grid" },
+  { href: "/dashboard", label: "Обзор", icon: "grid" },
   { href: "/agent", label: "AI-агент", icon: "bot" },
   { href: "/campaigns", label: "Кампании", icon: "layers" },
   { href: "/analytics", label: "Аналитика", icon: "chart" },
