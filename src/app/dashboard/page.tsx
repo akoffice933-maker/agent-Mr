@@ -8,6 +8,7 @@ import type { Platform } from "@/lib/agent/types";
 import { PLATFORM_LABEL } from "@/lib/agent/types";
 import { dateNDaysAgo, fmtDateTime, fmtMoney, fmtNum, fmtPct } from "@/lib/format";
 import { withTenantPage } from "@/lib/auth/dal";
+import { OnboardingChecklist } from "@/components/onboarding-checklist";
 
 export const dynamic = "force-dynamic";
 
@@ -150,6 +151,7 @@ export default async function DashboardPage() {
           </Link>
         }
       />
+      <OnboardingChecklist />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
         {kpis.map((k) => (

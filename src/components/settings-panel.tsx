@@ -10,6 +10,10 @@ interface PlatformState {
   mode: "sandbox" | "production";
   token: boolean;
   configured: boolean;
+  /** Разрешает ли тариф подключить ЕЩЁ одну площадку (считает сервер). */
+  canConnect?: boolean;
+  /** Причина отказа словами сервера — фронтенд её не сочиняет (ТЗ §8.3). */
+  blockedReason?: string | null;
 }
 
 interface SettingsState {
@@ -196,12 +200,23 @@ export function SettingsPanel() {
                       ? "OAuth настроен"
                       : "ключи в .env не заданы"}
                 </span>
-                {p.mode === "sandbox" && p.configured ? (
+                {p.mode === "sandbox" && p.configured && p.canConnect !== false ? (
+                  // Было `/api/oauth/{platform}/start` — такого маршрута нет,
+                  // кнопка вела в 404. Флоу стартует через ?start=1.
                   <a
-                    href={`/api/oauth/${p.platform}/start`}
+                    href={`/api/oauth/${p.platform}?start=1`}
                     className="rounded-lg bg-accent px-3 py-1.5 text-xs font-bold text-accent-ink transition-transform hover:-translate-y-px"
                   >
                     Подключить
+                  </a>
+                ) : null}
+                {p.mode === "sandbox" && p.configured && p.canConnect === false ? (
+                  <a
+                    href="/billing"
+                    title={p.blockedReason ?? undefined}
+                    className="rounded-lg border border-line2 px-3 py-1.5 text-xs font-bold text-mist transition-colors hover:border-accent/50 hover:text-accent"
+                  >
+                    Тариф исчерпан →
                   </a>
                 ) : null}
                 {p.mode === "production" ? (

@@ -5,6 +5,7 @@ import type { Platform } from "@/lib/agent/types";
 import { withTenantRequest } from "@/lib/tenant/request";
 import { tenantOrgId } from "@/lib/tenant/pool";
 import { requireAction } from "@/lib/tenant/route-authz";
+import { canConnectPlatform } from "@/lib/billing/quota";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -26,12 +27,20 @@ export async function GET(req: Request) {
   try {
     return await withTenantRequest(req, async () => {
       const s = await getSettings();
-      const platforms = (["google", "yandex", "avito"] as Platform[]).map(async (p) => ({
-        platform: p,
-        mode: await accountMode(p),
-        token: await hasToken(tenantOrgId(), p),
-        configured: platformConfigured(p),
-      }));
+      // Решение по лимиту тарифа отдаём вместе со списком площадок (ТЗ §5.2
+      // п.9): экран подключения обязан объяснить, ПОЧЕМУ следующая площадка
+      // недоступна, и сделать это текстом сервера (quota.ts), а не своим.
+      const platforms = (["google", "yandex", "avito"] as Platform[]).map(async (p) => {
+        const quota = await canConnectPlatform(tenantOrgId(), p);
+        return {
+          platform: p,
+          mode: await accountMode(p),
+          token: await hasToken(tenantOrgId(), p),
+          configured: platformConfigured(p),
+          canConnect: quota.allowed,
+          blockedReason: quota.allowed ? null : (quota.reason ?? null),
+        };
+      });
       return NextResponse.json({ ...s, platforms: await Promise.all(platforms) });
     });
   } catch (e) {

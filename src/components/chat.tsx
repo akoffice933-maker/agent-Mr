@@ -36,7 +36,16 @@ const RESOLVED_LABEL: Record<ResolvedState, string> = {
 
 export function Chat() {
   const [msgs, setMsgs] = useState<ChatMessageRow[]>([]);
-  const [input, setInput] = useState("");
+  // Готовый вопрос из чек-листа онбординга (/agent?ask=…) и «видели ли уже
+  // подсказку» читаются ленивым инициализатором, а не эффектом: эффект с
+  // setState даёт каскадный ре-рендер (и запрещён линтером react-hooks).
+  // На сервере window нет — там оба значения безопасно вырождаются в дефолт,
+  // а расхождения при гидрации не будет: подсказка всё равно скрыта, пока не
+  // загрузилась история диалога.
+  const [input, setInput] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return (new URLSearchParams(window.location.search).get("ask") ?? "").slice(0, 500);
+  });
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   // Which pending actions are no longer awaiting a decision. Seeded from the
@@ -44,7 +53,23 @@ export function Chat() {
   // put "Подтвердить / Отклонить" back under an already-executed action. The
   // click was correctly refused server-side, but nothing happened on screen.
   const [resolved, setResolved] = useState<ResolvedMap>({});
+  // ТЗ §5.2 п.10: после первого ответа агента подсказать, что он умеет не
+  // только отвечать. Подсказка показывается один раз за браузер — навязчивый
+  // онбординг раздражает сильнее, чем его отсутствие.
+  const [hintDismissed, setHintDismissed] = useState(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return localStorage.getItem("agent-first-write-hint") === "done";
+    } catch {
+      return true;
+    }
+  });
   const endRef = useRef<HTMLDivElement>(null);
+  // Чек-лист онбординга приводит сюда с готовым вопросом (/agent?ask=…):
+  // человеку остаётся нажать «Отправить», а не придумывать формулировку.
+  // Читаем строку запроса из window, а не через useSearchParams(): последний
+  // заставляет всё дерево уходить в CSR-bailout и требует Suspense вокруг
+  // компонента — слишком много церемонии ради одного необязательного параметра.
 
   useEffect(() => {
     apiFetch("/api/agent/messages")
@@ -143,6 +168,25 @@ export function Chat() {
     setResolved({});
   }, []);
 
+  const dismissHint = useCallback(() => {
+    setHintDismissed(true);
+    try {
+      localStorage.setItem("agent-first-write-hint", "done");
+    } catch {
+      /* приватный режим — подсказка просто вернётся в следующей сессии */
+    }
+  }, []);
+
+  // Показываем ровно в момент, когда подсказка полезна: агент уже ответил
+  // хотя бы раз, но разговор ещё короткий и ни одного изменения не запрошено.
+  const showWriteHint =
+    !hintDismissed &&
+    loaded &&
+    !busy &&
+    msgs.some((m) => m.role === "agent") &&
+    msgs.filter((m) => m.role === "user").length <= 2 &&
+    Object.keys(resolved).length === 0;
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 space-y-4 overflow-y-auto pb-4 pr-1">
@@ -175,6 +219,29 @@ export function Chat() {
         )}
         <div ref={endRef} />
       </div>
+
+      {showWriteHint ? (
+        <div className="rise-in mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-accent/25 bg-accent/[0.05] px-3.5 py-2.5">
+          <Icon name="sparkle" className="h-4 w-4 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 text-xs text-mist">
+            Агент умеет не только отвечать. Попросите его что-нибудь изменить — сначала он покажет предпросмотр
+            и спросит подтверждение, в кабинет ничего не уйдёт без вашего нажатия.
+          </span>
+          <button
+            onClick={() => {
+              dismissHint();
+              send("Поставь на паузу кампании с CTR ниже 1%");
+            }}
+            disabled={busy}
+            className="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-bold text-accent-ink transition-transform hover:-translate-y-px disabled:opacity-40"
+          >
+            Попробовать
+          </button>
+          <button onClick={dismissHint} className="text-[11px] font-semibold text-fog hover:text-snow">
+            Не сейчас
+          </button>
+        </div>
+      ) : null}
 
       <div className="mt-3 flex flex-wrap gap-1.5">
         {QUICK.map((q) => (

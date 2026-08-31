@@ -6,6 +6,7 @@ import { Chat } from "@/components/chat";
 import { Icon } from "@/components/icons";
 import { Card, SectionTitle } from "@/components/ui";
 import { OnboardBanner } from "@/components/onboard-banner";
+import { OnboardingChecklist } from "@/components/onboarding-checklist";
 import type { Platform } from "@/lib/agent/types";
 import { withTenantPage } from "@/lib/auth/dal";
 import { uiToolCatalog } from "@/lib/agent/tool-meta";
@@ -66,6 +67,7 @@ export default async function AgentPage({ searchParams }: { searchParams: Promis
         sub="Единая точка входа: естественный язык → 12 унифицированных команд → адаптеры платформ"
       />
       {banner}
+      <OnboardingChecklist />
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_300px]">
         <Card className="flex min-h-0 flex-col p-4">
           <Chat />
