@@ -85,6 +85,13 @@
       "when": 1788700001000,
       "tag": "0011_signup_and_billing",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788700002000,
+      "tag": "0012_password_resets",
+      "breakpoints": true
     }
   ]
 }

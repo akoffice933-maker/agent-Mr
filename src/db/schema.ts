@@ -347,6 +347,26 @@ export const emailVerifications = pgTable(
   (t) => [index("email_verifications_user_idx").on(t.userId)]
 );
 
+// ── Password reset ─────────────────────────────────────────────────────────
+// Отдельно от email_verifications: другой TTL (час против суток) и другая
+// цена ошибки. Хранится только хеш токена — ссылку из дампа не восстановить.
+export const passwordResets = pgTable(
+  "password_resets",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    consumedAt: timestamp("consumed_at"),
+    sentTo: text("sent_to").notNull(),
+    requestedIp: text("requested_ip"),
+  },
+  (t) => [index("password_resets_user_idx").on(t.userId)]
+);
+
 // ── Billing ────────────────────────────────────────────────────────────────
 // One subscription per organization (unique index on org_id): the entitlement
 // lookup must never be ambiguous. Provider columns stay nullable so a free org

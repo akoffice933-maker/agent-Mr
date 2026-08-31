@@ -19,8 +19,14 @@ export const PUBLIC_PAGES: ReadonlySet<string> = new Set([
   "/signup",
   // Opened from an email, often in a browser that holds no session.
   "/verify",
+  // Восстановление пароля: человек по определению не может войти.
+  "/forgot",
+  "/reset",
 ]);
 
+/** Публичные разделы целиком (юридические документы, ТЗ §5.1 п.7). */
+const PUBLIC_PREFIXES = ["/legal/"];
+
 export function isPublicPage(path: string): boolean {
-  return PUBLIC_PAGES.has(path);
+  return PUBLIC_PAGES.has(path) || PUBLIC_PREFIXES.some((p) => path.startsWith(p));
 }

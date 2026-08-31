@@ -22,7 +22,7 @@ import { getRateLimiter } from "@/lib/rate-limit";
 import { COOKIE_NAME } from "@/lib/auth/sessions";
 import { clientIpOf } from "@/lib/net/client-ip";
 import { roleForScopes } from "@/lib/agent/scopes";
-import { PUBLIC_PAGES } from "@/lib/public-routes";
+import { isPublicPage } from "@/lib/public-routes";
 
 const g = globalThis as typeof globalThis & {
   __userCache?: { at: number; has: boolean };
@@ -144,7 +144,7 @@ export async function proxy(req: NextRequest) {
   //   2. short-circuit anonymous requests with an honest 307 instead of
   //      rendering a full RSC payload that only carries a redirect.
   if (!path.startsWith("/api/")) {
-    if (isAuthRequired() && !PUBLIC_PAGES.has(path)) {
+    if (isAuthRequired() && !isPublicPage(path)) {
       const sid = req.cookies.get(COOKIE_NAME)?.value;
       if (!sid || !/^[a-f0-9]{64}$/.test(sid)) {
         const to = new URL("/login", req.url);
@@ -185,6 +185,26 @@ export async function proxy(req: NextRequest) {
         { error: "rate_limited", reason: "Слишком много попыток регистрации. Попробуйте через минуту." },
         { status: 429, headers: { "Retry-After": "60" } }
       );
+    }
+    return passThrough();
+  }
+  // Восстановление пароля: доступно без сессии по определению (человек как раз
+  // не может войти). Защита — жёсткий лимит по IP: запрос письма создаёт
+  // отправку почты, а перебор токенов — попытку смены чужого пароля.
+  if (path.startsWith("/api/auth/forgot")) {
+    if (!(await allow(`${ip}:forgot`, 5))) {
+      return NextResponse.json(
+        { error: "rate_limited", reason: "Слишком много запросов на сброс пароля. Попробуйте через минуту." },
+        { status: 429, headers: { "Retry-After": "60" } }
+      );
+    }
+    return passThrough();
+  }
+  if (path.startsWith("/api/auth/reset")) {
+    // Токен — 32 случайных байта; 20 попыток в минуту делают перебор
+    // бессмысленным, а живому человеку столько попыток и не нужно.
+    if (!(await allow(`${ip}:reset`, 20))) {
+      return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": "60" } });
     }
     return passThrough();
   }

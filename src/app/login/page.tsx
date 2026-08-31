@@ -93,6 +93,12 @@ function LoginForm() {
             {busy ? "Входим…" : "Войти"}
           </button>
 
+          <p className="mt-3 text-center text-[11px]">
+            <a href="/forgot" className="font-semibold text-fog hover:text-snow">
+              Забыли пароль?
+            </a>
+          </p>
+
           {signupOpen && (
             <p className="mt-3 text-center text-[11px] text-fog">
               Нет аккаунта?{" "}

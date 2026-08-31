@@ -88,6 +88,28 @@ export async function sendMail(msg: MailMessage): Promise<MailResult> {
   }
 }
 
+export function passwordResetEmail(link: string): { subject: string; text: string; html: string } {
+  return {
+    subject: "Сброс пароля — Agent Mr",
+    text: [
+      "Здравствуйте!",
+      "",
+      "Вы запросили сброс пароля в Agent Mr. Задайте новый пароль по ссылке:",
+      link,
+      "",
+      "Ссылка действует 1 час и сработает один раз.",
+      "После смены пароля все активные сессии будут завершены.",
+      "Если вы не запрашивали сброс — просто проигнорируйте это письмо, пароль останется прежним.",
+    ].join("\n"),
+    html: [
+      "<p>Здравствуйте!</p>",
+      "<p>Вы запросили сброс пароля в Agent Mr. Задайте новый пароль по ссылке:</p>",
+      `<p><a href="${link}">Задать новый пароль</a></p>`,
+      `<p style="color:#666;font-size:12px">Ссылка действует 1 час и сработает один раз. После смены пароля все активные сессии будут завершены. Если вы не запрашивали сброс — проигнорируйте это письмо.</p>`,
+    ].join(""),
+  };
+}
+
 export function verificationEmail(link: string): { subject: string; text: string; html: string } {
   return {
     subject: "Подтвердите email — Agent Mr",

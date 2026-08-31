@@ -45,6 +45,10 @@ export const DERIVED_TENANT_TABLES: string[] = ["metrics_daily", "keywords", "ne
 // are still enforced structurally (NOT NULL + FK) via ORG_ID_TABLES.
 // email_verifications: keyed by user_id, not org_id — it is consumed BEFORE any
 //   tenant context exists (the link is opened from an email, often logged out).
+// password_resets: same shape and the same reason — the person following the
+//   link cannot log in by definition, so there is no tenant context to run
+//   under. Only a hash of the token is stored, it is single-use and expires in
+//   an hour (src/lib/auth/reset.ts).
 // subscriptions / payment_events: the billing plane. Entitlements are read
 //   while resolving what an org may do, and webhooks arrive with no session at
 //   all — a provider calling in has no tenant context to run under. Access is
@@ -58,6 +62,7 @@ export const IDENTITY_TABLES: string[] = [
   "sessions",
   "org_invites",
   "email_verifications",
+  "password_resets",
   "subscriptions",
   "payment_events",
 ];
