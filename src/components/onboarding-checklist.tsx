@@ -91,6 +91,15 @@ export function OnboardingChecklist() {
     }).catch(() => {});
   };
 
+  const snooze = () => {
+    setHidden(true);
+    apiFetch("/api/onboarding", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ snoozeDays: 7 }),
+    }).catch(() => {});
+  };
+
   return (
     <div className="rise-in mb-4 rounded-xl border border-accent/30 bg-accent/[0.05] p-4">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -103,6 +112,9 @@ export function OnboardingChecklist() {
             Тариф «{s.planTitle}» · выполнено {done} из 3
           </div>
         </div>
+        <button onClick={snooze} className="text-xs font-semibold text-fog transition-colors hover:text-snow">
+          На 7 дней
+        </button>
         <button onClick={dismiss} className="text-xs font-semibold text-fog transition-colors hover:text-snow">
           Скрыть
         </button>

@@ -408,3 +408,23 @@ export const paymentEvents = pgTable(
   },
   (t) => [uniqueIndex("payment_events_provider_event_idx").on(t.provider, t.eventId), index("payment_events_org_idx").on(t.orgId)]
 );
+
+// ── Product analytics (self-serve funnel) ───────────────────────────────────
+// Identity-plane, no RLS: this is cross-tenant product/growth data (funnel
+// counts across ALL organizations), never a single org's own data displayed
+// back to that org — the same reasoning that keeps sessions/api_keys out of
+// RLS. event is validated against a fixed allowlist at the write site
+// (lib/analytics-events.ts) — this table stores no free-text from an
+// anonymous, unauthenticated caller. orgId is null for pre-login events
+// (landing_view, cta_signup_click) and set once a session exists.
+export const analyticsEvents = pgTable(
+  "analytics_events",
+  {
+    id: serial("id").primaryKey(),
+    event: text("event").notNull(),
+    orgId: integer("org_id").references(() => organizations.id, { onDelete: "set null" }),
+    meta: jsonb("meta"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [index("analytics_events_event_idx").on(t.event, t.createdAt)]
+);

@@ -65,6 +65,9 @@ export const IDENTITY_TABLES: string[] = [
   "password_resets",
   "subscriptions",
   "payment_events",
+  // Nullable org_id by design (pre-login funnel steps) — same reasoning as
+  // payment_events staying out of ORG_ID_TABLES below.
+  "analytics_events",
 ];
 
 // Tables whose org column must stay NOT NULL + FK even without RLS.

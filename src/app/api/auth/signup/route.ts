@@ -13,6 +13,7 @@ import { sessionCookie } from "@/lib/auth/cookies";
 import { appBaseUrl, sendMail, verificationEmail, isSmtpConfigured } from "@/lib/mail";
 import { clientIpOf } from "@/lib/net/client-ip";
 import { log } from "@/lib/log";
+import { recordAnalyticsEvent } from "@/lib/analytics-events";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -64,6 +65,8 @@ export async function POST(req: Request) {
 
   const ip = clientIpOf(req);
   const session = await createSession(userId, ip, req.headers.get("user-agent") ?? undefined);
+  // Analytics failure must never undo or delay a successful registration.
+  recordAnalyticsEvent("signup_complete", orgId).catch(() => undefined);
 
   const res = NextResponse.json(
     {

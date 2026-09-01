@@ -10,6 +10,7 @@ import { parseRole } from "@/lib/agent/rbac";
 import { resolveRequestContext, resolveSessionContext } from "@/lib/tenant/resolve";
 import type { TenantContext } from "@/lib/tenant/pool";
 import { log } from "@/lib/log";
+import { recordAnalyticsEvent } from "@/lib/analytics-events";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,7 @@ export async function GET(req: Request) {
         return NextResponse.redirect(`${errTo}?oauth=plan_limit&platform=google`);
       }
       const state = await withTenant(ctx, () => createOauthState("google", ctx));
+      recordAnalyticsEvent("oauth_started", ctx.orgId, { platform: "google" }).catch(() => undefined);
       return NextResponse.redirect(googleAuthUrl(state));
     }
     const code = url.searchParams.get("code");
@@ -65,6 +67,7 @@ export async function GET(req: Request) {
       } catch (e) {
         log.warn("post-oauth sync failed", { platform: "google" }, e);
       }
+      recordAnalyticsEvent("oauth_done", ctx.orgId, { platform: "google" }).catch(() => undefined);
       return NextResponse.redirect(backTo);
     });
   } catch (e) {

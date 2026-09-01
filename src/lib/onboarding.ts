@@ -18,6 +18,23 @@ import type { Platform } from "@/lib/agent/types";
 
 export const ONBOARDING_DISMISSED_KEY = "onboarding_dismissed";
 
+/**
+ * true — скрыт навсегда. { until } — скрыт до указанной ISO-даты (снюз на
+ * несколько дней), после неё чек-лист снова появится сам. Старые записи
+ * (просто boolean) читаются как раньше — обратная совместимость без миграции,
+ * value уже jsonb.
+ */
+export type DismissState = boolean | { until: string };
+
+function isDismissedNow(value: unknown): boolean {
+  if (value === true) return true;
+  if (value && typeof value === "object" && typeof (value as { until?: unknown }).until === "string") {
+    const until = Date.parse((value as { until: string }).until);
+    return Number.isFinite(until) && Date.now() < until;
+  }
+  return false;
+}
+
 const PLATFORMS: Platform[] = ["google", "yandex", "avito"];
 
 export const PLATFORM_TITLE: Record<Platform, string> = {
@@ -112,7 +129,7 @@ export async function onboardingState(): Promise<OnboardingState> {
   };
 
   return {
-    dismissed: dismissedRows[0]?.value === true,
+    dismissed: isDismissedNow(dismissedRows[0]?.value),
     plan: usage.plan,
     planTitle: usage.planTitle,
     platforms: slots,
@@ -123,10 +140,10 @@ export async function onboardingState(): Promise<OnboardingState> {
   };
 }
 
-export async function setOnboardingDismissed(dismissed: boolean): Promise<void> {
+export async function setOnboardingDismissed(value: DismissState): Promise<void> {
   const orgId = tenantOrgId();
   await db
     .insert(settings)
-    .values({ organizationId: orgId, key: ONBOARDING_DISMISSED_KEY, value: dismissed })
-    .onConflictDoUpdate({ target: [settings.organizationId, settings.key], set: { value: dismissed } });
+    .values({ organizationId: orgId, key: ONBOARDING_DISMISSED_KEY, value })
+    .onConflictDoUpdate({ target: [settings.organizationId, settings.key], set: { value } });
 }

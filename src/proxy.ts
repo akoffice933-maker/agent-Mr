@@ -217,6 +217,17 @@ export async function proxy(req: NextRequest) {
     return passThrough();
   }
 
+  // Product-analytics ingest: reachable pre-login by definition (landing_view,
+  // cta_signup_click happen before a session exists). The route itself
+  // validates the event against a fixed allowlist and resolves org_id
+  // optionally, so per-IP rate limiting is the only gate needed here.
+  if (path === "/api/analytics/event") {
+    if (!(await allow(`${ip}:analytics`, 60))) {
+      return NextResponse.json({ error: "rate_limited" }, { status: 429 });
+    }
+    return passThrough();
+  }
+
   // Login endpoint: open (when auth is required) but brute-force limited.
   if (path.startsWith("/api/auth/login")) {
     if (authRequired) {

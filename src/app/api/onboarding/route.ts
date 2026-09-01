@@ -11,7 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { withTenantRequest } from "@/lib/tenant/request";
-import { onboardingState, setOnboardingDismissed } from "@/lib/onboarding";
+import { onboardingState, setOnboardingDismissed, type DismissState } from "@/lib/onboarding";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -28,10 +28,13 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     return await withTenantRequest(req, async () => {
-      const body = (await req.json().catch(() => ({}))) as { dismissed?: unknown };
-      const dismissed = body.dismissed !== false;
-      await setOnboardingDismissed(dismissed);
-      return NextResponse.json({ ok: true, dismissed });
+      const body = (await req.json().catch(() => ({}))) as { dismissed?: unknown; snoozeDays?: unknown };
+      const snoozeDays = typeof body.snoozeDays === "number" && body.snoozeDays > 0 ? Math.min(body.snoozeDays, 30) : null;
+      const value: DismissState = snoozeDays
+        ? { until: new Date(Date.now() + snoozeDays * 86_400_000).toISOString() }
+        : body.dismissed !== false;
+      await setOnboardingDismissed(value);
+      return NextResponse.json({ ok: true, dismissed: value });
     });
   } catch (e) {
     log.error("onboarding.post_failed", {}, e);

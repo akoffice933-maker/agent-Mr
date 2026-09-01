@@ -9,6 +9,7 @@ import { parseRole } from "@/lib/agent/rbac";
 import { resolveRequestContext } from "@/lib/tenant/resolve";
 import type { TenantContext } from "@/lib/tenant/pool";
 import { log } from "@/lib/log";
+import { recordAnalyticsEvent } from "@/lib/analytics-events";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,7 @@ export async function GET(req: Request) {
         return NextResponse.redirect(`${errTo}?oauth=plan_limit&platform=avito`);
       }
       return await withTenant(ctx, async () => {
+        recordAnalyticsEvent("oauth_started", ctx.orgId, { platform: "avito" }).catch(() => undefined);
         await avitoFetchToken();
         await setAccountMode("avito", "production");
         try {
@@ -42,6 +44,7 @@ export async function GET(req: Request) {
         } catch (e) {
           log.warn("post-oauth sync failed", { platform: "avito" }, e);
         }
+        recordAnalyticsEvent("oauth_done", ctx.orgId, { platform: "avito" }).catch(() => undefined);
         return NextResponse.redirect(backTo);
       });
     }

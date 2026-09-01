@@ -18,6 +18,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Card } from "@/components/ui";
 import { Icon } from "@/components/icons";
+import { TrackedLink } from "@/components/tracked-link";
+import { LandingViewTracker } from "@/components/landing-view-tracker";
 import { PLANS } from "@/lib/billing/plans";
 import { uiToolCatalog, type CatalogEntry } from "@/lib/agent/tool-meta";
 import { fmtMoney, fmtNum } from "@/lib/format";
@@ -32,6 +34,20 @@ export const metadata: Metadata = {
   description:
     "AI-агент управляет рекламой на трёх площадках по-русски: показывает предпросмотр изменения и стоимость, "
     + "и ничего не меняет в кабинете без вашего подтверждения.",
+  alternates: { canonical: "/welcome" },
+  openGraph: {
+    type: "website",
+    locale: "ru_RU",
+    url: "/welcome",
+    siteName: "Unified AI Ads Agent",
+    title: "Google Ads, Яндекс.Директ и Авито — из одного чата",
+    description: "Предпросмотр изменения и его стоимость до того, как что-то произойдёт. Подтверждение — за вами.",
+  },
+  twitter: {
+    card: "summary",
+    title: "Google Ads, Яндекс.Директ и Авито — из одного чата",
+    description: "Предпросмотр изменения и его стоимость до того, как что-то произойдёт. Подтверждение — за вами.",
+  },
 };
 
 const PLATFORM_LABEL: Record<"g" | "y" | "a", string> = {
@@ -85,6 +101,33 @@ function toolGroups(): { title: string; note: string; tools: CatalogEntry[] }[] 
     },
   ];
 }
+
+const FAQ: { q: string; a: string }[] = [
+  {
+    q: "Можно ли попробовать без банковской карты?",
+    a: "Да. Бесплатный тариф не требует карты: один рекламный кабинет и 50 изменений в месяц без ограничения по времени.",
+  },
+  {
+    q: "Что если агент ошибётся?",
+    a: "Любое действие, которое влияет на рекламный кабинет — пауза кампании, изменение ставки или бюджета — сначала показывается как превью с точной формулировкой изменения и его стоимостью. Действие уходит в кабинет только после того, как вы нажали «Подтвердить».",
+  },
+  {
+    q: "Кто видит данные моей организации?",
+    a: "Только участники вашей команды с назначенной ролью. Данные разных организаций физически изолированы на уровне базы данных (Row-Level Security в PostgreSQL), а не только проверкой внутри кода приложения.",
+  },
+  {
+    q: "Что делает агент без моего участия?",
+    a: "Ничего, что стоит денег. Чтение — отчёты, аналитика, список кампаний — агент делает самостоятельно и без ограничений на любом тарифе. Любое изменение, влияющее на бюджет или показ рекламы, требует вашего подтверждения.",
+  },
+  {
+    q: "Как отключить или удалить аккаунт?",
+    a: "В настройках команды. Отключение рекламного кабинета не удаляет историю его кампаний из журнала аудита — она сохраняется для истории изменений даже после отключения OAuth.",
+  },
+  {
+    q: "Чем это отличается от встроенных «умных» рекомендаций площадок?",
+    a: "Встроенные рекомендации работают только с одним кабинетом и часто применяются автоматически без явного подтверждения. Агент видит все три площадки сразу, ничего не применяет без вашего «Подтвердить» и ведёт единый журнал изменений по всем трём.",
+  },
+];
 
 function PlanCard({ id }: { id: "free" | "pro" }) {
   const p = PLANS[id];
@@ -164,20 +207,27 @@ export default function WelcomePage() {
             <a href="#pricing" className="rounded-lg px-3 py-2 text-xs font-semibold text-fog hover:text-snow">
               Тарифы
             </a>
+            <a href="#faq" className="rounded-lg px-3 py-2 text-xs font-semibold text-fog hover:text-snow">
+              Вопросы
+            </a>
           </nav>
           <div className="ml-auto flex items-center gap-2">
             <Link href="/login" className="rounded-lg px-3 py-2 text-xs font-semibold text-mist hover:text-snow">
               Войти
             </Link>
-            <Link
+            <TrackedLink
               href="/signup"
+              event="cta_signup_click"
+              meta={{ location: "header" }}
               className="rounded-lg bg-accent px-3.5 py-2 text-xs font-bold text-accent-ink transition-transform hover:-translate-y-px"
             >
               Начать бесплатно
-            </Link>
+            </TrackedLink>
           </div>
         </div>
       </header>
+
+      <LandingViewTracker />
 
       <div className="mx-auto w-full max-w-[1100px] px-4 sm:px-6">
         {/* ── Первый экран ────────────────────────────────────── */}
@@ -196,12 +246,14 @@ export default function WelcomePage() {
                 В рекламный кабинет ничего не уходит, пока вы не нажали «Подтвердить».
               </p>
               <div className="mt-7 flex flex-wrap gap-3">
-                <Link
+                <TrackedLink
                   href="/signup"
+                  event="cta_signup_click"
+                  meta={{ location: "hero" }}
                   className="rounded-xl bg-accent px-5 py-3 text-sm font-bold text-accent-ink transition-transform hover:-translate-y-px"
                 >
                   Начать бесплатно
-                </Link>
+                </TrackedLink>
                 <a
                   href="#how"
                   className="rounded-xl border border-line2 px-5 py-3 text-sm font-bold text-snow hover:border-accent/50"
@@ -379,6 +431,22 @@ export default function WelcomePage() {
           </p>
         </section>
 
+        {/* ── FAQ ──────────────────────────────────────────────── */}
+        <section id="faq" className="border-t border-line py-14">
+          <h2 className="font-display text-2xl font-bold text-snow sm:text-3xl">Частые вопросы</h2>
+          <div className="mt-8 divide-y divide-line/70 border-t border-b border-line/70">
+            {FAQ.map((f) => (
+              <details key={f.q} className="group py-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-sm font-bold text-snow">
+                  {f.q}
+                  <Icon name="chevronDown" className="h-4 w-4 shrink-0 text-fog transition-transform group-open:rotate-180" />
+                </summary>
+                <p className="mt-3 max-w-2xl text-xs leading-relaxed text-mist">{f.a}</p>
+              </details>
+            ))}
+          </div>
+        </section>
+
         {/* ── Финальный призыв ────────────────────────────────── */}
         <section className="border-t border-line py-14">
           <Card className="p-8 text-center sm:p-10">
@@ -389,12 +457,14 @@ export default function WelcomePage() {
               Подключите один кабинет и спросите «покажи расход за последние 7 дней». Управление включите позже,
               когда решите, что агенту можно доверять.
             </p>
-            <Link
+            <TrackedLink
               href="/signup"
+              event="cta_signup_click"
+              meta={{ location: "final" }}
               className="mt-6 inline-flex rounded-xl bg-accent px-6 py-3 text-sm font-bold text-accent-ink transition-transform hover:-translate-y-px"
             >
               Начать бесплатно
-            </Link>
+            </TrackedLink>
           </Card>
         </section>
       </div>

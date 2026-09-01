@@ -117,6 +117,11 @@ export function Icon({ name, className = "h-4 w-4" }: IconProps) {
         <path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13" />
       </>
     ),
+    chevronDown: (
+      <>
+        <path d="m6 9 6 6 6-6" />
+      </>
+    ),
   };
 
   return (
