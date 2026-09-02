@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { CampaignsTable, type CampaignUiRow } from "@/components/campaigns-table";
 import { SectionTitle } from "@/components/ui";
-import { EmptyState } from "@/components/empty-state";
+import { EmptyState, showEmptyState } from "@/components/empty-state";
 import type { Platform } from "@/lib/agent/types";
 import { dateNDaysAgo } from "@/lib/format";
 import { withTenantPage } from "@/lib/auth/dal";
@@ -59,7 +59,13 @@ export default async function CampaignsPage() {
         title="Кампании и объявления"
         sub={`Единый реестр по трём платформам: ${rows.length} объектов, ${active} активны. Кнопки действий проходят через тот же safety-слой, что и команды агента.`}
       />
-      {connected === 0 ? (
+      {/* Плашка — только когда показывать действительно нечего. Одного
+          connected === 0 недостаточно: агент в sandbox-режиме создаёт кампании
+          без единого oauth-токена (run.ts, applyLocal — «other platforms
+          (sandbox) keep a placeholder external id»), и тогда заголовок выше
+          честно считал «N объектов, M активны», а плашка под ним уверяла, что
+          площадок нет, пряча при этом реальные строки. */}
+      {showEmptyState({ connected, hasData: rows.length > 0 }) ? (
         <EmptyState
           title="Пока не подключена ни одна площадка"
           hint="Реестр объединит кампании Google Ads, Яндекс.Директа и Авито, как только вы подключите хотя бы один кабинет."

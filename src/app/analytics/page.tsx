@@ -3,7 +3,7 @@ import { gte } from "drizzle-orm";
 import { db } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { Card, HBar, PlatformBadge, SectionTitle, StackedBars } from "@/components/ui";
-import { EmptyState } from "@/components/empty-state";
+import { EmptyState, showEmptyState } from "@/components/empty-state";
 import type { Platform } from "@/lib/agent/types";
 import { PLATFORM_LABEL } from "@/lib/agent/types";
 import { dateNDaysAgo, fmtDate, fmtMoney, fmtNum, fmtPct } from "@/lib/format";
@@ -121,7 +121,10 @@ export default async function AnalyticsPage(props: {
           </div>
         }
       />
-      {connected === 0 ? (
+      {/* См. комментарий в campaigns/page.tsx: расход, уже накопленный
+          sandbox-кампаниями, нельзя прятать за приглашением подключить
+          кабинет. */}
+      {showEmptyState({ connected, hasData: camps.length > 0 || totalSpend > 0 }) ? (
         <EmptyState
           title="Пока нет данных для аналитики"
           hint="Графики появятся, как только вы подключите хотя бы одну рекламную площадку и агент синхронизирует первые метрики."
