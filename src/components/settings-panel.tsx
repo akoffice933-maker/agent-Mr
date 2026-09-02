@@ -9,6 +9,7 @@ interface PlatformState {
   platform: "google" | "yandex" | "avito";
   mode: "sandbox" | "production";
   token: boolean;
+  tokenState?: "none" | "live" | "stale";
   configured: boolean;
   /** Разрешает ли тариф подключить ЕЩЁ одну площадку (считает сервер). */
   canConnect?: boolean;
@@ -193,12 +194,14 @@ export function SettingsPanel() {
                 >
                   {p.mode === "production" ? "production" : "sandbox"}
                 </span>
-                <span className="ml-auto text-[11px] text-fog">
-                  {p.mode === "production" && p.token
-                    ? "токен сохранён"
-                    : p.configured
-                      ? "OAuth настроен"
-                      : "ключи в .env не заданы"}
+                <span className={`ml-auto text-[11px] ${p.tokenState === "stale" ? "text-bad" : "text-fog"}`}>
+                  {p.tokenState === "stale"
+                    ? "токен истёк — переподключите"
+                    : p.mode === "production" && p.token
+                      ? "токен сохранён"
+                      : p.configured
+                        ? "OAuth настроен"
+                        : "ключи в .env не заданы"}
                 </span>
                 {p.mode === "sandbox" && p.configured && p.canConnect !== false ? (
                   // Было `/api/oauth/{platform}/start` — такого маршрута нет,
@@ -218,6 +221,24 @@ export function SettingsPanel() {
                   >
                     Тариф исчерпан →
                   </a>
+                ) : null}
+                {p.token ? (
+                  <button
+                    onClick={() => {
+                      // Подтверждение не формальность: отзыв освобождает слот
+                      // тарифа и останавливает синхронизацию, а обратно —
+                      // только через полный OAuth-флоу у площадки.
+                      if (!confirm(`Отозвать доступ к ${PLATFORM_NAMES[p.platform]}? Сохранённый токен будет удалён, синхронизация остановится. История кампаний и расходов останется.`)) return;
+                      apiFetch("/api/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ platform: p.platform, disconnect: true }),
+                      }).then(() => location.reload());
+                    }}
+                    className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-fog transition-colors hover:border-bad/50 hover:text-bad"
+                  >
+                    Отключить
+                  </button>
                 ) : null}
                 {p.mode === "production" ? (
                   <button

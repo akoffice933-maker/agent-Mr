@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSettings, updateSettings, writeAudit } from "@/lib/agent/safety";
-import { accountMode, hasToken, setAccountMode } from "@/lib/adapters/oauth-store";
+import { accountMode, deleteToken, hasToken, setAccountMode, tokenState } from "@/lib/adapters/oauth-store";
 import type { Platform } from "@/lib/agent/types";
 import { withTenantRequest } from "@/lib/tenant/request";
 import { tenantOrgId } from "@/lib/tenant/pool";
@@ -36,6 +36,9 @@ export async function GET(req: Request) {
           platform: p,
           mode: await accountMode(p),
           token: await hasToken(tenantOrgId(), p),
+          // Строка в таблице ≠ работающий доступ: протухший токен без
+          // refresh_token выглядел в интерфейсе как «токен сохранён».
+          tokenState: await tokenState(tenantOrgId(), p),
           configured: platformConfigured(p),
           canConnect: quota.allowed,
           blockedReason: quota.allowed ? null : (quota.reason ?? null),
@@ -53,6 +56,30 @@ export async function POST(req: Request) {
   try {
     return await withTenantRequest(req, async () => {
       const body = await req.json();
+      // Отзыв доступа к рекламному кабинету. До этого удалить сохранённый
+      // токен было нельзя ничем, кроме прямого доступа к базе, — а политика
+      // конфиденциальности обещает пользователю возможность отзыва.
+      if (typeof body.platform === "string" && ["google", "yandex", "avito"].includes(body.platform) && body.disconnect === true) {
+        const denied = requireAction(req, "credentials");
+        if (denied) return denied;
+        const platform = body.platform as Platform;
+        const removed = await deleteToken(tenantOrgId(), platform);
+        // Площадка без токена не может работать в production: оставить режим
+        // как есть значило бы обещать реальный API там, где ходить уже нечем.
+        if (removed) {
+          await setAccountMode(platform, "sandbox");
+          await writeAudit({
+            actor: "ui",
+            tool: "disconnect_platform",
+            params: { platform },
+            platforms: [platform],
+            dryRun: false,
+            status: "applied",
+            summary: `Доступ к площадке ${platform} отозван, токен удалён`,
+          });
+        }
+        return NextResponse.json({ ok: true, platform, removed });
+      }
       // Switch an account back to sandbox (or production) mode from the UI.
       if (typeof body.platform === "string" && ["google", "yandex", "avito"].includes(body.platform) && ["sandbox", "production"].includes(body.mode)) {
         const denied = requireAction(req, "credentials");

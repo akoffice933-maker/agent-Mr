@@ -62,7 +62,24 @@ export async function writeActionsThisMonth(orgId: number): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
-/** Ad platforms currently connected (one oauth_tokens row per platform). */
+/**
+ * Занятые слоты площадок — СТРОКИ в oauth_tokens, а не «живые» токены.
+ *
+ * Считать здесь только рабочие токены заманчиво (протухший без refresh_token
+ * бесполезен), но это открывает обход лимита. Free, maxPlatforms = 1:
+ *
+ *   1. yandex подключён, refresh_token нет, срок истёк → «живых» 0;
+ *   2. canConnectPlatform("google"): used 0 < 1 → разрешено, строк становится 2;
+ *   3. переподключение yandex бесплатно — строка уже существует (см. ниже);
+ *   4. итог: две рабочие площадки на тарифе, где оплачена одна.
+ *
+ * Поэтому слот занимает сам факт связи с кабинетом и освобождает его только
+ * явный отзыв доступа (POST /api/settings {platform, disconnect:true}) —
+ * действие пользователя, а не молчаливое протухание токена.
+ *
+ * «Работает ли доступ на самом деле» — другой вопрос и другая функция:
+ * tokenState() в adapters/oauth-store.ts, она показывается в настройках.
+ */
 export async function connectedPlatforms(orgId: number): Promise<number> {
   const rows = await db
     .select({ n: sql<number>`count(*)::int` })

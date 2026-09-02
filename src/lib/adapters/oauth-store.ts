@@ -81,6 +81,51 @@ export async function getToken(org: number, platform: Platform, allowRefresh = t
   return expired ? null : token;
 }
 
+/**
+ * Состояние сохранённого доступа к площадке.
+ *
+ *  none  — токена нет;
+ *  live  — токен рабочий (или протух, но есть refresh_token, значит
+ *          восстановится сам при следующем обращении);
+ *  stale — срок истёк, а refresh_token отсутствует. Строка в таблице есть, но
+ *          ни один запрос к API площадки по ней уже не пройдёт. Раньше такой
+ *          токен в интерфейсе выглядел ровно как рабочий («токен сохранён»),
+ *          и человек узнавал правду только по молча пустеющим отчётам.
+ */
+export type TokenState = "none" | "live" | "stale";
+
+export async function tokenState(org: number, platform: Platform): Promise<TokenState> {
+  const row = (
+    await db
+      .select({ refreshToken: oauthTokens.refreshToken, expiresAt: oauthTokens.expiresAt })
+      .from(oauthTokens)
+      .where(and(eq(oauthTokens.organizationId, org), eq(oauthTokens.platform, platform)))
+  )[0];
+  if (!row) return "none";
+  if (row.refreshToken) return "live";
+  if (!row.expiresAt) return "live";
+  return new Date(row.expiresAt).getTime() > Date.now() ? "live" : "stale";
+}
+
+/**
+ * Отзыв доступа: удаляет сохранённый токен организации.
+ *
+ * Возвращает false, если удалять было нечего — вызывающий отличает «отключили»
+ * от «уже было отключено» и не пишет в журнал несуществующее действие.
+ *
+ * Локальное зеркало (campaigns, metrics_daily) сознательно НЕ трогаем: это
+ * история расходов организации, а не собственность площадки. Человек отзывает
+ * доступ к кабинету, а не просит стереть свою отчётность за прошлые месяцы.
+ */
+export async function deleteToken(org: number, platform: Platform): Promise<boolean> {
+  const removed = await db
+    .delete(oauthTokens)
+    .where(and(eq(oauthTokens.organizationId, org), eq(oauthTokens.platform, platform)))
+    .returning({ id: oauthTokens.id });
+  if (removed.length) log.info("oauth.token_deleted", { org, platform });
+  return removed.length > 0;
+}
+
 export async function hasToken(org: number, platform: Platform): Promise<boolean> {
   return (
     await db.select({ id: oauthTokens.id }).from(oauthTokens).where(and(eq(oauthTokens.organizationId, org), eq(oauthTokens.platform, platform)))
