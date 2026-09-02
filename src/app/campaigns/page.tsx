@@ -3,14 +3,17 @@ import { db } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { CampaignsTable, type CampaignUiRow } from "@/components/campaigns-table";
 import { SectionTitle } from "@/components/ui";
+import { EmptyState } from "@/components/empty-state";
 import type { Platform } from "@/lib/agent/types";
 import { dateNDaysAgo } from "@/lib/format";
 import { withTenantPage } from "@/lib/auth/dal";
+import { connectedPlatforms } from "@/lib/billing/quota";
 
 export const dynamic = "force-dynamic";
 
 export default async function CampaignsPage() {
-  return withTenantPage(async () => {
+  return withTenantPage(async (ctx) => {
+  const connected = await connectedPlatforms(ctx.orgId);
   const from = dateNDaysAgo(6);
   const [camps, metrics] = await Promise.all([
     db.select().from(campaigns),
@@ -56,7 +59,14 @@ export default async function CampaignsPage() {
         title="Кампании и объявления"
         sub={`Единый реестр по трём платформам: ${rows.length} объектов, ${active} активны. Кнопки действий проходят через тот же safety-слой, что и команды агента.`}
       />
-      <CampaignsTable rows={rows} />
+      {connected === 0 ? (
+        <EmptyState
+          title="Пока не подключена ни одна площадка"
+          hint="Реестр объединит кампании Google Ads, Яндекс.Директа и Авито, как только вы подключите хотя бы один кабинет."
+        />
+      ) : (
+        <CampaignsTable rows={rows} />
+      )}
     </div>
   );
   });

@@ -3,10 +3,12 @@ import { gte } from "drizzle-orm";
 import { db } from "@/db";
 import { campaigns, metricsDaily } from "@/db/schema";
 import { Card, HBar, PlatformBadge, SectionTitle, StackedBars } from "@/components/ui";
+import { EmptyState } from "@/components/empty-state";
 import type { Platform } from "@/lib/agent/types";
 import { PLATFORM_LABEL } from "@/lib/agent/types";
 import { dateNDaysAgo, fmtDate, fmtMoney, fmtNum, fmtPct } from "@/lib/format";
 import { withTenantPage } from "@/lib/auth/dal";
+import { connectedPlatforms } from "@/lib/billing/quota";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +18,8 @@ const PLATFORMS: Platform[] = ["google", "yandex", "avito"];
 export default async function AnalyticsPage(props: {
   searchParams: Promise<{ period?: string }>;
 }) {
-  return withTenantPage(async () => {
+  return withTenantPage(async (ctx) => {
+  const connected = await connectedPlatforms(ctx.orgId);
   const sp = await props.searchParams;
   const days = [7, 14, 30].includes(Number(sp.period)) ? Number(sp.period) : 7;
   const from = dateNDaysAgo(days - 1);
@@ -118,116 +121,125 @@ export default async function AnalyticsPage(props: {
           </div>
         }
       />
+      {connected === 0 ? (
+        <EmptyState
+          title="Пока нет данных для аналитики"
+          hint="Графики появятся, как только вы подключите хотя бы одну рекламную площадку и агент синхронизирует первые метрики."
+        />
+      ) : (
+        <>
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        <Card className="p-5 xl:col-span-2">
-          <h2 className="mb-4 font-display text-sm font-bold tracking-tight">Динамика расхода по платформам</h2>
-          <StackedBars days={series} height={200} />
-        </Card>
+        <div className="grid gap-4 xl:grid-cols-3">
+          <Card className="p-5 xl:col-span-2">
+            <h2 className="mb-4 font-display text-sm font-bold tracking-tight">Динамика расхода по платформам</h2>
+            <StackedBars days={series} height={200} />
+          </Card>
 
-        <Card className="p-5">
-          <h2 className="mb-1 font-display text-sm font-bold tracking-tight">Сравнение CPA</h2>
-          <p className="mb-4 text-[11px] text-fog">Чем ниже — тем эффективнее канал</p>
-          <div className="space-y-2.5">
-            {cpaRows.map((r) => (
-              <HBar
-                key={r.platform}
-                label={<PlatformBadge p={r.platform} small />}
-                value={r.cpa ?? 0}
-                max={maxCpa}
-                color={bestCpa && r.platform === bestCpa.platform ? "#4ecb8d" : HEX[r.platform]}
-                suffix={fmtMoney(r.cpa)}
-              />
-            ))}
-          </div>
-          {bestCpa ? (
-            <div className="mt-4 rounded-lg border border-good/30 bg-good/10 px-3 py-2 text-[11px] text-mist">
-              Лучший канал: <b className="text-good">{PLATFORM_LABEL[bestCpa.platform]}</b> · {fmtMoney(bestCpa.cpa)} за конверсию
+          <Card className="p-5">
+            <h2 className="mb-1 font-display text-sm font-bold tracking-tight">Сравнение CPA</h2>
+            <p className="mb-4 text-[11px] text-fog">Чем ниже — тем эффективнее канал</p>
+            <div className="space-y-2.5">
+              {cpaRows.map((r) => (
+                <HBar
+                  key={r.platform}
+                  label={<PlatformBadge p={r.platform} small />}
+                  value={r.cpa ?? 0}
+                  max={maxCpa}
+                  color={bestCpa && r.platform === bestCpa.platform ? "#4ecb8d" : HEX[r.platform]}
+                  suffix={fmtMoney(r.cpa)}
+                />
+              ))}
             </div>
-          ) : null}
-        </Card>
-      </div>
+            {bestCpa ? (
+              <div className="mt-4 rounded-lg border border-good/30 bg-good/10 px-3 py-2 text-[11px] text-mist">
+                Лучший канал: <b className="text-good">{PLATFORM_LABEL[bestCpa.platform]}</b> · {fmtMoney(bestCpa.cpa)} за конверсию
+              </div>
+            ) : null}
+          </Card>
+        </div>
 
-      <Card className="mt-4 overflow-x-auto">
-        <table className="w-full">
-          <thead>
-            <tr className="text-left text-[10px] uppercase tracking-wide text-fog">
-              <th className="border-b border-line px-4 py-2.5">Платформа</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">Объектов</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">Расход</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">Доля бюджета</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">Показы</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">Клики</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">CTR</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">Конверсии</th>
-              <th className="border-b border-line px-4 py-2.5 text-right">CPA</th>
-            </tr>
-          </thead>
-          <tbody>
-            {perPlatform.map((r) => (
-              <tr key={r.platform}>
-                <td className="border-b border-line/50 px-4 py-2.5"><PlatformBadge p={r.platform} /></td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{r.campaigns}</td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs font-bold">{fmtMoney(r.spend)}</td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs text-fog">
-                  {totalSpend > 0 ? fmtPct((r.spend / totalSpend) * 100, 1) : "—"}
-                </td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtNum(r.impressions)}</td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtNum(r.clicks)}</td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtPct(r.ctr, 2)}</td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtNum(r.conversions)}</td>
-                <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs font-semibold">{r.cpa ? fmtMoney(r.cpa) : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <Card className="overflow-x-auto">
-          <h2 className="px-4 pt-4 font-display text-sm font-bold tracking-tight">Топ кампаний по расходу</h2>
-          <table className="mt-2 w-full">
+        <Card className="mt-4 overflow-x-auto">
+          <table className="w-full">
             <thead>
               <tr className="text-left text-[10px] uppercase tracking-wide text-fog">
-                <th className="border-b border-line px-4 py-2">Кампания</th>
-                <th className="border-b border-line px-4 py-2 text-right">Расход</th>
-                <th className="border-b border-line px-4 py-2 text-right">CTR</th>
-                <th className="border-b border-line px-4 py-2 text-right">CPA</th>
+                <th className="border-b border-line px-4 py-2.5">Платформа</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">Объектов</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">Расход</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">Доля бюджета</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">Показы</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">Клики</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">CTR</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">Конверсии</th>
+                <th className="border-b border-line px-4 py-2.5 text-right">CPA</th>
               </tr>
             </thead>
             <tbody>
-              {top.map((c) => (
-                <tr key={c.id}>
-                  <td className="max-w-52 truncate border-b border-line/50 px-4 py-2 text-xs font-medium">{c.name}</td>
-                  <td className="num border-b border-line/50 px-4 py-2 text-right text-xs">{fmtMoney(c.spend)}</td>
-                  <td className="num border-b border-line/50 px-4 py-2 text-right text-xs">{fmtPct(c.ctr, 2)}</td>
-                  <td className="num border-b border-line/50 px-4 py-2 text-right text-xs">{c.cpa ? fmtMoney(c.cpa) : "—"}</td>
+              {perPlatform.map((r) => (
+                <tr key={r.platform}>
+                  <td className="border-b border-line/50 px-4 py-2.5"><PlatformBadge p={r.platform} /></td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{r.campaigns}</td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs font-bold">{fmtMoney(r.spend)}</td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs text-fog">
+                    {totalSpend > 0 ? fmtPct((r.spend / totalSpend) * 100, 1) : "—"}
+                  </td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtNum(r.impressions)}</td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtNum(r.clicks)}</td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtPct(r.ctr, 2)}</td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs">{fmtNum(r.conversions)}</td>
+                  <td className="num border-b border-line/50 px-4 py-2.5 text-right text-xs font-semibold">{r.cpa ? fmtMoney(r.cpa) : "—"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </Card>
 
-        <Card>
-          <h2 className="px-4 pt-4 font-display text-sm font-bold tracking-tight">Аутсайдеры по CTR</h2>
-          <p className="px-4 text-[11px] text-fog">Кандидаты на паузу — агент может остановить их одной командой</p>
-          <div className="space-y-2 p-4">
-            {worst.map((c) => (
-              <div key={c.id} className="flex items-center gap-2 rounded-lg border border-line bg-panel2 px-3 py-2">
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: HEX[c.platform] }} />
-                <span className="min-w-0 flex-1 truncate text-xs text-mist">{c.name}</span>
-                <span className="num text-xs font-bold text-bad">{fmtPct(c.ctr, 2)}</span>
-              </div>
-            ))}
-            <Link
-              href="/agent"
-              className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold text-accent hover:underline"
-            >
-              «Поставь на паузу кампании с CTR ниже 1%» →
-            </Link>
-          </div>
-        </Card>
-      </div>
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <Card className="overflow-x-auto">
+            <h2 className="px-4 pt-4 font-display text-sm font-bold tracking-tight">Топ кампаний по расходу</h2>
+            <table className="mt-2 w-full">
+              <thead>
+                <tr className="text-left text-[10px] uppercase tracking-wide text-fog">
+                  <th className="border-b border-line px-4 py-2">Кампания</th>
+                  <th className="border-b border-line px-4 py-2 text-right">Расход</th>
+                  <th className="border-b border-line px-4 py-2 text-right">CTR</th>
+                  <th className="border-b border-line px-4 py-2 text-right">CPA</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top.map((c) => (
+                  <tr key={c.id}>
+                    <td className="max-w-52 truncate border-b border-line/50 px-4 py-2 text-xs font-medium">{c.name}</td>
+                    <td className="num border-b border-line/50 px-4 py-2 text-right text-xs">{fmtMoney(c.spend)}</td>
+                    <td className="num border-b border-line/50 px-4 py-2 text-right text-xs">{fmtPct(c.ctr, 2)}</td>
+                    <td className="num border-b border-line/50 px-4 py-2 text-right text-xs">{c.cpa ? fmtMoney(c.cpa) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+
+          <Card>
+            <h2 className="px-4 pt-4 font-display text-sm font-bold tracking-tight">Аутсайдеры по CTR</h2>
+            <p className="px-4 text-[11px] text-fog">Кандидаты на паузу — агент может остановить их одной командой</p>
+            <div className="space-y-2 p-4">
+              {worst.map((c) => (
+                <div key={c.id} className="flex items-center gap-2 rounded-lg border border-line bg-panel2 px-3 py-2">
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: HEX[c.platform] }} />
+                  <span className="min-w-0 flex-1 truncate text-xs text-mist">{c.name}</span>
+                  <span className="num text-xs font-bold text-bad">{fmtPct(c.ctr, 2)}</span>
+                </div>
+              ))}
+              <Link
+                href="/agent"
+                className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold text-accent hover:underline"
+              >
+                «Поставь на паузу кампании с CTR ниже 1%» →
+              </Link>
+            </div>
+          </Card>
+        </div>
+        </>
+      )}
     </div>
   );
   });

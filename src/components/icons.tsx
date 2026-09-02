@@ -122,6 +122,12 @@ export function Icon({ name, className = "h-4 w-4" }: IconProps) {
         <path d="m6 9 6 6 6-6" />
       </>
     ),
+    plug: (
+      <>
+        <path d="M9 2v4M15 2v4M7 8h10l-1 5a5 5 0 0 1-8 0L7 8Z" />
+        <path d="M12 17v5" />
+      </>
+    ),
   };
 
   return (
