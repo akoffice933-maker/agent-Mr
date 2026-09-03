@@ -20,19 +20,12 @@ name: Deploy landing to GitHub Pages
 on:
   push:
     branches: [main]
-    paths:
-      # Сборка запускается от того, что реально влияет на витрину.
-      - "src/app/welcome/**"
-      - "src/app/legal/**"
-      - "src/components/**"
-      - "src/lib/billing/plans.ts"
-      - "src/lib/agent/tool-meta.ts"
-      - "src/lib/demo-script.ts"
-      - "src/app/globals.css"
-      - "src/app/layout.tsx"
-      - "scripts/export-landing.mjs"
-      - ".github/workflows/github-pages.yml"
-      - "package-lock.json"
+    # Сознательно БЕЗ paths-фильтра. Список путей был бы allowlist'ом, а не
+    # гарантией: как только /welcome начнёт импортировать новый модуль
+    # (src/lib/…), изменение этого модуля меняет витрину, но workflow бы не
+    # запустился — и Pages молча остался бы устаревшим. Отследить граф
+    # импортов списком вручную нельзя. Лишняя сборка стоит пары минут CI,
+    # расхождение витрины с продуктом — дороже.
   workflow_dispatch:
 
 permissions:

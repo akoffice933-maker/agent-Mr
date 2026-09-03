@@ -23,7 +23,7 @@ dry-run предпросмотр → **человек подтверждает**
 
 | | |
 |---|---|
-| 🎬 **Демо** | [Живой интерактивный чат (RU/EN)](https://akoffice933-maker.github.io/agent-Mr/) · [видео: аудит + управление](demo/assets/demo-audit.mp4) · [видео: кросс-отчёт](demo/assets/demo-report.mp4) |
+| 🎬 **Демо** | [Живой интерактивный чат (RU/EN)](https://akoffice933-maker.github.io/agent-Mr/) — сценарии аудита, кросс-отчёта и подтверждения прямо в браузере |
 | 🛡 **Безопасность** | read-only by default · dry-run · лимиты · approval · re-check · encrypted tokens · fail-closed API auth · rate limiting |
 | 📡 **Клиенты** | Web UI · Telegram-бот (`/report` `/audit` `/pending`) · MCP-сервер (6 tools) — один REST API |
 | 🏭 **Production** | Яндекс.Директ: готов (OAuth, API v5, Метрика) · Google Ads: sandbox · Авито: sandbox |
@@ -75,11 +75,15 @@ npm run dev                 # http://localhost:3000
 
 Google Ads и Авито: адаптеры готовы, остаются в sandbox (см. план ниже).
 
-## Демо-видео
+## Демо
 
-- [`demo/assets/demo-audit.mp4`](demo/assets/demo-audit.mp4) — аудит → рекомендации → включение управления → пауза кампаний с подтверждением (35 с)
-- [`demo/assets/demo-report.mp4`](demo/assets/demo-report.mp4) — сводный расход + кросс-платформенный отчёт (12 с)
-- Статичный демо-сайт с живым чатом (RU/EN): <https://akoffice933-maker.github.io/agent-Mr/>
+Интерактивная витрина с живым чатом (RU/EN):
+<https://akoffice933-maker.github.io/agent-Mr/>
+
+Сценарии проигрываются в браузере на условных данных, без бэкенда:
+
+- **аудит** → рекомендации → включение управления → пауза кампаний с подтверждением;
+- **кросс-отчёт** → сводный расход по Google Ads, Яндекс.Директ и Авито.
 
 ## Текущий статус
 
@@ -389,6 +393,9 @@ npx next start -p 3200 &
 node scripts/export-landing.mjs      # --base /agent-Mr --out demo
 ```
 
-Результат коммитится в `demo/`; workflow `.github/workflows/github-pages.yml`
-публикует этот каталог. Рабочая часть (вход, дашборд, агент) на витрине не
+Каталог `demo/` — артефакт сборки: он в `.gitignore` и его не надо коммитить.
+Workflow `.github/workflows/github-pages.yml` на каждый push в `main`
+пересобирает приложение, заново снимает витрину, проверяет результат шагом
+«Verify export» и публикует. Команды выше нужны лишь для локальной проверки
+экспорта. Рабочая часть (вход, дашборд, агент) на витрине не
 представлена — она требует сервера и базы; ссылки входа ведут на репозиторий.

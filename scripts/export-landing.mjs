@@ -10,8 +10,12 @@
 //   npx next build && npx next start -p 3200 &
 //   node scripts/export-landing.mjs [--base /agent-Mr] [--out demo]
 //
-// Результат детерминирован и коммитится в репозиторий: workflow
-// .github/workflows/github-pages.yml публикует каталог demo/ как есть.
+// Каталог demo/ — артефакт сборки, а НЕ содержимое репозитория: он в
+// .gitignore и его не нужно коммитить. Workflow
+// .github/workflows/github-pages.yml на каждый push в main пересобирает
+// приложение, заново снимает витрину этим скриптом, проверяет результат
+// шагом «Verify export» и только потом публикует. Единственный источник
+// истины — src/app/welcome/page.tsx и остальные страницы приложения.
 
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
