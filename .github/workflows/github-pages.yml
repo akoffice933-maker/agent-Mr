@@ -101,7 +101,7 @@ jobs:
           echo "export OK: $(find demo -type f | wc -l) файлов"
 
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: demo
 
