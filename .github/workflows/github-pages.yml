@@ -1,6 +1,11 @@
-# Deploys the static demo site (demo/) to GitHub Pages.
-# Pages settings: Source = GitHub Actions (set automatically on first run via API,
-# or manually in Settings → Pages).
+# Публикует статическую витрину лендинга (demo/) на GitHub Pages.
+#
+# Содержимое demo/ генерируется из НАСТОЯЩИХ страниц приложения, а не пишется
+# руками: `npx next build && npx next start -p 3200`, затем
+# `node scripts/export-landing.mjs`. Так витрина не расходится с продуктом —
+# цены, список команд агента и тексты берутся из того же кода.
+#
+# Pages settings: Source = GitHub Actions.
 
 name: Deploy demo to GitHub Pages
 

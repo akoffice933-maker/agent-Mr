@@ -374,3 +374,21 @@ By default a **new** key with no `--scopes` is **read-only** (`read`); write
 capabilities require an explicit `--scopes`. Legacy keys created before scopes
 existed remain unrestricted for backward compatibility — rotate them to scoped
 keys before production use.
+
+## Статическая витрина лендинга
+
+Публичные страницы (`/welcome`, `/legal/*`) опубликованы на GitHub Pages:
+**https://akoffice933-maker.github.io/agent-Mr/**
+
+Витрина генерируется из настоящих страниц приложения, а не поддерживается
+отдельно, поэтому не расходится с продуктом:
+
+```bash
+npx next build
+npx next start -p 3200 &
+node scripts/export-landing.mjs      # --base /agent-Mr --out demo
+```
+
+Результат коммитится в `demo/`; workflow `.github/workflows/github-pages.yml`
+публикует этот каталог. Рабочая часть (вход, дашборд, агент) на витрине не
+представлена — она требует сервера и базы; ссылки входа ведут на репозиторий.
