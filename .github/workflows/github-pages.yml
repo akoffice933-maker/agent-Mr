@@ -1,20 +1,38 @@
-# Публикует статическую витрину лендинга (demo/) на GitHub Pages.
+# Публикует статическую витрину лендинга на GitHub Pages.
 #
-# Содержимое demo/ генерируется из НАСТОЯЩИХ страниц приложения, а не пишется
-# руками: `npx next build && npx next start -p 3200`, затем
-# `node scripts/export-landing.mjs`. Так витрина не расходится с продуктом —
-# цены, список команд агента и тексты берутся из того же кода.
+# Витрина СОБИРАЕТСЯ здесь, а не берётся из закоммиченного каталога. Раньше
+# workflow публиковал папку demo/, лежащую в репозитории: она была построена
+# из /welcome один раз, и ничто не мешало ей разойтись с продуктом — правка в
+# src/app/welcome/page.tsx не попадала на Pages, а правка руками в demo/ не
+# попадала в продукт. Теперь единственный источник истины — исходный код:
 #
-# Pages settings: Source = GitHub Actions.
+#   src/app/welcome/page.tsx
+#         ↓  next build && next start
+#   scripts/export-landing.mjs
+#         ↓
+#   артефакт Pages (в git не хранится)
+#
+# Поэтому каталог demo/ удалён из репозитория и внесён в .gitignore: править
+# там нечего, любые изменения пришлось бы делать в самих страницах.
 
-name: Deploy demo to GitHub Pages
+name: Deploy landing to GitHub Pages
 
 on:
   push:
     branches: [main]
     paths:
-      - "demo/**"
+      # Сборка запускается от того, что реально влияет на витрину.
+      - "src/app/welcome/**"
+      - "src/app/legal/**"
+      - "src/components/**"
+      - "src/lib/billing/plans.ts"
+      - "src/lib/agent/tool-meta.ts"
+      - "src/lib/demo-script.ts"
+      - "src/app/globals.css"
+      - "src/app/layout.tsx"
+      - "scripts/export-landing.mjs"
       - ".github/workflows/github-pages.yml"
+      - "package-lock.json"
   workflow_dispatch:
 
 permissions:
@@ -27,16 +45,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Сборка нужна целиком: /welcome импортирует plans.ts и tool-meta.ts,
+      # то есть тянет за собой обычный граф модулей приложения.
+      - name: Build
+        run: npx next build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          # Значения-заглушки: страницы витрины к БД не обращаются (ISR без
+          # withTenantPage), но модули на этапе импорта ждут переменные.
+          DATABASE_URL: postgresql://user:pass@127.0.0.1:5432/db
+          ENCRYPTION_KEY: ci-export-key-0000000000000000000000000000
+          PUBLIC_URL: https://akoffice933-maker.github.io/agent-Mr
+
+      - name: Export static landing
+        run: |
+          npx next start -p 3200 &
+          # Без wait-on: лишняя зависимость ради одного ожидания. Ждём, пока
+          # сервер начнёт отдавать /welcome, максимум 60 секунд.
+          for i in $(seq 60); do
+            curl -sf -o /dev/null http://127.0.0.1:3200/welcome && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://127.0.0.1:3200/welcome
+          node scripts/export-landing.mjs
+        env:
+          DATABASE_URL: postgresql://user:pass@127.0.0.1:5432/db
+          ENCRYPTION_KEY: ci-export-key-0000000000000000000000000000
+
+      # Пустая или обрезанная выгрузка не должна тихо уехать на Pages вместо
+      # рабочего сайта.
+      - name: Verify export
+        run: |
+          set -e
+          test -f demo/index.html
+          test -f demo/404.html
+          test -f demo/legal/privacy/index.html
+          test -f demo/legal/terms/index.html
+          test -f demo/.nojekyll
+          grep -q "Unified AI Ads Agent" demo/index.html
+          grep -q "Демонстрация на условных данных" demo/index.html
+          # Ни одной ссылки в закрытую часть: на статике её не существует.
+          ! grep -qE 'href="/(login|signup|dashboard|agent|billing)' demo/index.html
+          # Имена файлов без обратного слэша (следствие экранирования в RSC).
+          ! find demo -name '*\\*' | grep -q .
+          echo "export OK: $(find demo -type f | wc -l) файлов"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo
+
   deploy:
+    needs: build
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: demo
       - id: deployment
         uses: actions/deploy-pages@v4

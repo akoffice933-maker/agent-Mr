@@ -40,7 +40,10 @@ const assets = new Set();
 
 /** Собирает пути к /_next/... из HTML, чтобы скачать их следом. */
 function collectAssets(html) {
-  const re = /["'(](\/_next\/[^"')\s]+)["')\s]/g;
+  // Внутри RSC-payload пути экранированы: \"/_next/chunk.js\". Если не
+  // исключить обратный слэш из класса символов, он попадает в имя и на диск
+  // ложится дубль «chunk.js\» — мёртвый файл, который Pages никому не отдаст.
+  const re = /["'(](\/_next\/[^"')\s\\]+)["')\s\\]/g;
   let m;
   while ((m = re.exec(html)) !== null) assets.add(m[1]);
 }
@@ -62,9 +65,26 @@ function rewrite(html) {
 
   // Ссылки на рабочую часть → на репозиторий (демо статическое, входа нет).
   const REPO = "https://github.com/akoffice933-maker/agent-Mr";
-  for (const p of ["/login", "/signup", "/dashboard", "/agent", "/billing"]) {
-    out = out.replaceAll(`href="${p}"`, `href="${REPO}" target="_blank" rel="noopener"`);
-  }
+  // Два прохода, и оба обязательны.
+  //
+  // 1) Обычная HTML-разметка. Регулярка, а не точное совпадение: у карточки
+  //    Pro ссылка вида href="/signup?plan=pro", и replaceAll по
+  //    `href="/signup"` её не ловил — кнопка тарифа вела в 404.
+  const APP = "(login|signup|dashboard|agent|billing)";
+  out = out.replace(
+    new RegExp(`href="/${APP}(\\?[^"]*)?"`, "g"),
+    `href="${REPO}" target="_blank" rel="noopener"`
+  );
+
+  // 2) RSC-payload в <script>: там та же ссылка сериализована как
+  //    \"href\":\"/signup?plan=pro\". Пропустить этот проход — значит
+  //    починить ссылку только до гидратации: React поднимет payload и
+  //    вернёт на кнопку исходный путь, ведущий в никуда. Заменяем ЗНАЧЕНИЕ,
+  //    сохраняя структуру JSON, — иначе payload перестанет разбираться.
+  out = out.replace(
+    new RegExp(`\\\\"href\\\\":\\\\"/${APP}(\\?[^"\\\\]*)?\\\\"`, "g"),
+    `\\"href\\":\\"${REPO}\\"`
+  );
 
   // Баннер: посетитель должен понимать, что это витрина, а не рабочий стенд.
   const banner = `<div style="background:#c6f052;color:#171b08;font:600 12px/1.5 system-ui,sans-serif;padding:8px 16px;text-align:center">
@@ -109,6 +129,33 @@ async function main() {
   // .nojekyll: без него Pages игнорирует каталоги, начинающиеся с подчёркивания
   // (_next) — самая частая причина «стили не подхватились».
   await save(".nojekyll", "");
+
+  // 404.html: на Pages нет сервера, который увёл бы /login или опечатку в
+  // приложение, — без своей страницы посетитель видит стандартную заглушку
+  // GitHub и не понимает, куда попал. Возвращаем его на витрину.
+  const REPO = "https://github.com/akoffice933-maker/agent-Mr";
+  await save(
+    "404.html",
+    `<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Страница не найдена — Unified AI Ads Agent</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#0d1013;color:#e9ede6;font:400 15px/1.6 system-ui,-apple-system,sans-serif;padding:24px}
+  .b{max-width:460px;text-align:center}
+  h1{font-size:22px;margin:0 0 12px}
+  p{color:#8c97a6;font-size:14px;margin:0 0 20px}
+  a{display:inline-block;margin:0 6px;padding:10px 18px;border-radius:10px;
+    font-size:13px;font-weight:700;text-decoration:none}
+  .p{background:#c6f052;color:#171b08}
+  .s{border:1px solid #262e38;color:#e9ede6}
+</style></head><body><div class="b">
+<h1>Здесь только витрина</h1>
+<p>Это статическая копия лендинга на GitHub Pages: рабочее приложение — вход, дашборд, агент —
+требует сервера и базы данных, поэтому по этому адресу их нет.</p>
+<a class="p" href="${BASE}/">На главную</a><a class="s" href="${REPO}">Исходный код</a>
+</div></body></html>`
+  );
   console.log("done");
 }
 

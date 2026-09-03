@@ -7,3 +7,7 @@ tsconfig.tsbuildinfo
 
 # demo ad creative (not part of the app)
 public/agentmr-ad.*
+
+# Витрина Pages — build artifact, генерируется scripts/export-landing.mjs в CI.
+# Ручные правки здесь потерялись бы при следующей сборке (см. github-pages.yml).
+/demo/
