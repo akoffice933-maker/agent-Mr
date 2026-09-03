@@ -20,6 +20,7 @@ import { Card } from "@/components/ui";
 import { Icon } from "@/components/icons";
 import { TrackedLink } from "@/components/tracked-link";
 import { LandingViewTracker } from "@/components/landing-view-tracker";
+import { DemoAgent } from "@/components/demo-agent";
 import { PLANS } from "@/lib/billing/plans";
 import { uiToolCatalog, type CatalogEntry } from "@/lib/agent/tool-meta";
 import { fmtMoney, fmtNum } from "@/lib/format";
@@ -121,7 +122,11 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: "Как отключить или удалить аккаунт?",
-    a: "В настройках команды. Отключение рекламного кабинета не удаляет историю его кампаний из журнала аудита — она сохраняется для истории изменений даже после отключения OAuth.",
+    a: "Рекламный кабинет отключается кнопкой «Отключить» в разделе «Настройки»: сохранённый токен удаляется сразу, синхронизация прекращается, слот тарифа освобождается. История кампаний и журнал изменений при этом остаются у вас — это ваши данные, а не данные площадки. Учётная запись удаляется по запросу в поддержку.",
+  },
+  {
+    q: "Демо на этой странице — настоящие данные?",
+    a: "Нет, это демонстрация на условных цифрах: она не обращается к рекламным кабинетам и ничего не меняет. Последовательность шагов в ней ровно та же, что в продукте, — запрос обычными словами, предпросмотр с расчётом стоимости, ваше подтверждение и запись в журнал.",
   },
   {
     q: "Чем это отличается от встроенных «умных» рекомендаций площадок?",
@@ -264,52 +269,11 @@ export default function WelcomePage() {
               <p className="mt-3 text-xs text-fog">Без карты · {toolCount} команд агента · отчёты без лимита на всех тарифах</p>
             </div>
 
-            {/* Демонстрация диалога — статическая разметка, без клиентского JS */}
-            <Card className="p-4">
-              <div className="flex items-center gap-2 border-b border-line pb-3">
-                <Icon name="bot" className="h-4 w-4 text-accent" />
-                <span className="text-xs font-semibold text-mist">AI-агент</span>
-                <span className="ml-auto rounded-full border border-line2 px-2 py-0.5 text-[10px] text-fog">
-                  предпросмотр
-                </span>
-              </div>
-              <div className="space-y-3 pt-3">
-                <div className="ml-auto w-fit max-w-[85%] rounded-xl bg-accent/12 px-3 py-2 text-xs text-snow">
-                  Останови кампании с CTR ниже 1%
-                </div>
-                <div className="w-fit max-w-[92%] rounded-xl border border-line bg-panel2 px-3 py-2 text-xs text-mist">
-                  Нашёл 3 кампании ниже порога. Изменение затронет бюджет — сначала предпросмотр:
-                  <div className="mt-2 space-y-1 font-mono text-[11px] text-fog">
-                    <div className="flex justify-between gap-3">
-                      <span>Поиск — Диваны на заказ</span>
-                      <span className="text-mist">CTR 0,74% → пауза</span>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <span>РСЯ — Кухни</span>
-                      <span className="text-mist">CTR 0,61% → пауза</span>
-                    </div>
-                    <div className="flex justify-between gap-3">
-                      <span>Авито — Шкафы</span>
-                      <span className="text-mist">CTR 0,93% → пауза</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-xl border border-warn/35 bg-warn/[0.07] px-3 py-2.5">
-                  <div className="text-[11px] font-bold text-warn">Требуется подтверждение</div>
-                  <div className="mt-1 text-[11px] text-mist">
-                    Освободится ≈ 11 400 ₽ в неделю. Дневной лимит изменений: 18 000 ₽ из 50 000 ₽.
-                  </div>
-                  <div className="mt-2.5 flex gap-2">
-                    <span className="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-bold text-accent-ink">
-                      Подтвердить
-                    </span>
-                    <span className="rounded-lg border border-line2 px-3 py-1.5 text-[11px] font-semibold text-fog">
-                      Отклонить
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </Card>
+            {/* Интерактивное демо: раньше здесь была статическая картинка
+                диалога. Посетитель теперь сам прогоняет сценарий и видит
+                механизм подтверждения, а не читает о нём. Данные — из
+                lib/demo-script.ts, без обращений к БД и LLM. */}
+            <DemoAgent />
           </div>
         </section>
 

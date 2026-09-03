@@ -15,6 +15,11 @@ export const ANALYTICS_EVENTS = [
   "oauth_done",
   "first_agent_message",
   "first_approve",
+  // Демо-агент на лендинге: посетитель дошёл до предпросмотра и нажал
+  // «Подтвердить». Прокси-метрика того, что ключевой механизм продукта
+  // (предложение → предпросмотр → подтверждение) понят до регистрации.
+  "demo_run",
+  "demo_confirm",
 ] as const;
 
 export type AnalyticsEvent = (typeof ANALYTICS_EVENTS)[number];
