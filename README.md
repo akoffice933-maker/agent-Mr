@@ -199,6 +199,11 @@ docker compose up --build                       # app + postgres
 docker compose --profile clients up --build     # + telegram-bot + mcp-server
 ```
 
+> Вывод в боевую эксплуатацию — по чек-листу
+> [`docs/deployment.md`](docs/deployment.md): секреты, роль БД без
+> BYPASSRLS, reverse-proxy, Redis при нескольких репликах, SMTP,
+> проверки после деплоя.
+
 ## Переменные окружения
 
 | Переменная | Обязательна | Назначение |
