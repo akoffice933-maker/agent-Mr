@@ -198,11 +198,17 @@ export default function WelcomePage() {
       {/* ── Хедер ─────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 border-b border-line bg-ink/85 backdrop-blur">
         <div className="mx-auto flex h-14 w-full max-w-[1100px] items-center gap-4 px-4 sm:px-6">
-          <Link href="/welcome" className="flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent text-accent-ink">
+          {/* min-w-0 обязателен: без него flex-элемент не сжимается ниже
+              своего содержимого и распирает строку. На узком экране
+              остаётся короткое имя, полное возвращается с 400px. */}
+          <Link href="/welcome" className="flex min-w-0 items-center gap-2">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-ink">
               <Icon name="bot" className="h-4 w-4" />
             </span>
-            <span className="font-display text-sm font-bold text-snow">Unified AI Ads Agent</span>
+            <span className="truncate font-display text-sm font-bold text-snow">
+              <span className="min-[400px]:hidden">Agent Mr</span>
+              <span className="hidden min-[400px]:inline">Unified AI Ads Agent</span>
+            </span>
           </Link>
           <nav className="ml-3 hidden gap-1 sm:flex">
             <a href="#features" className="rounded-lg px-3 py-2 text-xs font-semibold text-fog hover:text-snow">
@@ -218,17 +224,21 @@ export default function WelcomePage() {
               Вопросы
             </a>
           </nav>
-          <div className="ml-auto flex items-center gap-2">
-            <Link href="/login" className="rounded-lg px-3 py-2 text-xs font-semibold text-mist hover:text-snow">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Link
+              href="/login"
+              className="hidden rounded-lg px-3 py-2 text-xs font-semibold text-mist hover:text-snow min-[420px]:block"
+            >
               Войти
             </Link>
             <TrackedLink
               href="/signup"
               event="cta_signup_click"
               meta={{ location: "header" }}
-              className="rounded-lg bg-accent px-3.5 py-2 text-xs font-bold text-accent-ink transition-transform hover:-translate-y-px"
+              className="whitespace-nowrap rounded-lg bg-accent px-3.5 py-2 text-xs font-bold text-accent-ink transition-transform hover:-translate-y-px"
             >
-              Начать бесплатно
+              <span className="sm:hidden">Начать</span>
+              <span className="hidden sm:inline">Начать бесплатно</span>
             </TrackedLink>
           </div>
         </div>
@@ -241,9 +251,12 @@ export default function WelcomePage() {
         <section className="py-14 sm:py-20">
           <div className="grid gap-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
             <div>
-              <span className="inline-flex items-center gap-2 rounded-full border border-line2 bg-panel px-3 py-1.5 text-[11px] font-semibold text-mist">
-                <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                Google Ads · Яндекс.Директ · Авито
+              {/* Строка с разделителями «·» не переносится сама: на узком
+                  экране она распирала бы бейдж. Разрешаем перенос и не даём
+                  точке сжиматься. */}
+              <span className="inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-full border border-line2 bg-panel px-3 py-1.5 text-[11px] font-semibold text-mist">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                <span>Google Ads · Яндекс.Директ · Авито</span>
               </span>
               <h1 className="font-display mt-4 text-3xl leading-tight font-bold text-snow sm:text-4xl lg:text-5xl">
                 Управляйте Google Ads, Яндекс.Директом и Авито <span className="text-accent">из одного чата</span>
