@@ -112,3 +112,96 @@ body {
 .pulse-soft {
   animation: pulse-soft 2.2s ease-in-out infinite;
 }
+
+/* ── Бегущая линия по краю карточки (border beam) ──────────────
+   Обычный border не анимируется по периметру, поэтому светящийся
+   отрезок рисуется в ::before на conic-gradient и вращается, а
+   ::after перекрывает середину фоном — видимой остаётся только
+   рамка. Всё на GPU-свойстве transform, без JS. */
+.beam {
+  position: relative;
+}
+.beam::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--beam-angle, 0deg),
+    transparent 0deg,
+    transparent 300deg,
+    var(--color-accent) 345deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: beam-spin 6s linear infinite;
+  pointer-events: none;
+  /* Слой кладётся ПОВЕРХ фона карточки, а не под него: у Card
+     непрозрачный bg-panel, и при z-index:-1 подсветку было бы не видно.
+     Маска оставляет от слоя только рамку в 1px, поэтому содержимое он
+     не затемняет, а pointer-events:none сохраняет клики. */
+  z-index: 1;
+}
+@property --beam-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes beam-spin {
+  to {
+    --beam-angle: 360deg;
+  }
+}
+
+/* ── Бесконечная лента (marquee) ───────────────────────────────
+   Трек содержит два одинаковых набора элементов, сдвиг на -50%
+   даёт бесшовный цикл. Края растворяются маской. */
+.marquee {
+  overflow: hidden;
+  -webkit-mask: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee-scroll 26s linear infinite;
+}
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+@keyframes marquee-scroll {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* ── Доступность ───────────────────────────────────────────────
+   Посетителю, который попросил не показывать анимации, отдаём
+   статичную страницу: бегущая рамка гаснет, лента замирает,
+   печать в демо тоже (см. demo-agent.tsx). Контент при этом
+   остаётся полным — гасится только движение. */
+@media (prefers-reduced-motion: reduce) {
+  .beam::before,
+  .marquee-track,
+  .typing-dot,
+  .pulse-soft,
+  .rise-in {
+    animation: none !important;
+  }
+  .beam::before {
+    background: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

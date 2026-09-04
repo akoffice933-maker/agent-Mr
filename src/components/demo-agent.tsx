@@ -121,7 +121,9 @@ export function DemoAgent() {
 
   return (
     <div>
-      <Card className="p-4">
+      {/* .beam — бегущая по периметру подсветка (globals.css). Чисто
+          декоративная и гаснет при prefers-reduced-motion. */}
+      <Card className="beam p-4">
         <div className="flex items-center gap-2 border-b border-line pb-3">
           <Icon name="bot" className="h-4 w-4 text-accent" />
           <span className="text-xs font-semibold text-mist">AI-агент</span>

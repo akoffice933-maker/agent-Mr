@@ -21,6 +21,8 @@ import { Icon } from "@/components/icons";
 import { TrackedLink } from "@/components/tracked-link";
 import { LandingViewTracker } from "@/components/landing-view-tracker";
 import { DemoAgent } from "@/components/demo-agent";
+import { NumberTicker } from "@/components/number-ticker";
+import { MarqueePlatforms } from "@/components/marquee-platforms";
 import { PLANS } from "@/lib/billing/plans";
 import { uiToolCatalog, type CatalogEntry } from "@/lib/agent/tool-meta";
 import { fmtMoney, fmtNum } from "@/lib/format";
@@ -267,6 +269,9 @@ export default function WelcomePage() {
                 </a>
               </div>
               <p className="mt-3 text-xs text-fog">Без карты · {toolCount} команд агента · отчёты без лимита на всех тарифах</p>
+              <div className="mt-7 -mx-1">
+                <MarqueePlatforms />
+              </div>
             </div>
 
             {/* Интерактивное демо: раньше здесь была статическая картинка
@@ -303,7 +308,8 @@ export default function WelcomePage() {
         <section id="features" className="border-t border-line py-14">
           <h2 className="font-display text-2xl font-bold text-snow sm:text-3xl">Что умеет агент</h2>
           <p className="mt-3 max-w-2xl text-sm text-mist">
-            {toolCount} команд на трёх площадках. Список берётся из кода агента — что он умеет на самом деле,
+            <NumberTicker value={toolCount} className="font-semibold text-accent" /> команд на трёх
+            площадках. Список берётся из кода агента — что он умеет на самом деле,
             то и написано здесь.
           </p>
           <div className="mt-8 grid gap-4 lg:grid-cols-3">

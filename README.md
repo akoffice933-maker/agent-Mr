@@ -89,7 +89,7 @@ Google Ads и Авито: адаптеры готовы, остаются в san
 
 | Блок | Статус |
 |---|---|
-| LLM-ядро + rule-based fallback, 13 команд | ✅ |
+| LLM-ядро + rule-based fallback, 16 команд | ✅ |
 | Safety: read-only по умолчанию, dry-run, лимиты, approval, re-check, audit | ✅ |
 | Production hardening A–E.1: fail-closed auth, сессии, **RLS (FORCE, 13 таблиц)**, RBAC (5 ролей + риск-слой), **read-back VERIFIED**, **идемпотентное создание кампаний** + saga-состояние | ✅ |
 | Яндекс.Директ: production-адаптер (OAuth + API v5 + Метрика) | ✅ готов (E2E ждёт одобрения заявки на API-доступ Директа) |
@@ -339,7 +339,7 @@ cd telegram-bot && npm run selftest # форматирование ответо�
 Agent Core:  LLM (OpenRouter, tool calling)  →  rule-based fallback
         │    + Session Context (история, сущности)
         ▼
-Unified Tool Layer (13 команд, src/lib/agent/tools.ts)
+Unified Tool Layer (16 команд, src/lib/agent/tools.ts)
         │
         ▼
 Safety Layer: read-only → лимиты (день/неделя/месяц) → dry-run → pending → audit-log
