@@ -11,6 +11,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Пакет, опубликованный час назад, может оказаться скомпрометированным
+    # (типовой сценарий: угон учётки мейнтейнера и релиз с вредоносным
+    # postinstall). Неделя выдержки — время, за которое такие релизы
+    # обычно отзывают, и обновление не попадает в PR автоматически.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       # Patch/minor bumps land as ONE PR to keep the review queue small;
@@ -23,6 +29,8 @@ updates:
     directory: "/telegram-bot"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     groups:
       minor-and-patch:
@@ -33,6 +41,8 @@ updates:
     directory: "/mcp-server"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     groups:
       minor-and-patch:
@@ -44,4 +54,6 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     labels: ["dependencies", "ci"]

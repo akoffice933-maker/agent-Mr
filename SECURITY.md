@@ -64,6 +64,29 @@ Getting these wrong reintroduces vulnerabilities the code cannot defend against:
 - Run behind TLS. Session cookies are `HttpOnly` + `SameSite=Strict` and rely on
   HTTPS in production.
 
+## Known advisories accepted without a fix
+
+### `stream-json@1.9.1` — CVE-2026-71429 (medium, DoS)
+
+Filters `pick` / `ignore` / `filter` / `replace` are O(depth²) on deeply
+nested input, so crafted JSON can block the event loop.
+
+**Not fixable by upgrading, and not reachable in this codebase:**
+
+- the advisory is fixed only in `stream-json@3.x`, which requires Node ≥ 22 —
+  the runtime image is `node:20-alpine`, so the override breaks the build;
+- `google-ads-api@24` pins `stream-json@^1.8.0`; `1.9.1` is the newest 1.x;
+- the affected filters are never used. `google-ads-api` calls only `parser()`
+  and `streamArray()` (`build/src/customer.js`), and this repository does not
+  import `stream-json` at all;
+- the parsed JSON is a Google Ads API response, not user input, and the
+  library is loaded dynamically only on the production Google Ads path, which
+  is still sandbox-only.
+
+Re-evaluate when the base image moves to Node 22 or `google-ads-api` widens
+its range. Tracked by `tests/unit/known-advisories.test.ts`, which fails if
+either assumption stops holding.
+
 ## Supported versions
 
 This is pre-1.0 software under active development: fixes land on `main`, and

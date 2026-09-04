@@ -59,5 +59,15 @@ COPY --from=deps --chown=node:node /app/node_modules/drizzle-orm ./node_modules/
 
 EXPOSE 3000
 
+# Оркестратор должен уметь отличить «процесс жив» от «приложение работает».
+# /api/health отдаёт 503 при недоступной базе, поэтому проверка ловит и
+# потерю соединения с Postgres, а не только упавший Node.
+#
+# node вместо curl/wget: образ на alpine, где их нет, а ставить пакет ради
+# healthcheck значит расширять поверхность атаки. start-period покрывает
+# прогон миграций при старте контейнера.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 # `server.js` is the standalone entrypoint (replaces `npm start`).
 CMD ["sh", "-c", "node scripts/migrate.mjs && node server.js"]
