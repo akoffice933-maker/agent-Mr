@@ -36,7 +36,8 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     ok: sent.ok,
-    emailSent: sent.ok,
+    // Как и в /api/auth/signup: console-транспорт означает, что письма нет.
+    emailSent: sent.ok && sent.transport === "smtp",
     verificationToken: !isSmtpConfigured() ? token : undefined,
   });
 }

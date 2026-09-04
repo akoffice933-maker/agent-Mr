@@ -73,7 +73,11 @@ export async function POST(req: Request) {
       ok: true,
       user: { id: userId, email, role: "owner" },
       orgId,
-      emailSent: sent.ok,
+      // Признак реальной доставки — транспорт, а не отсутствие исключения:
+      // без SMTP sendMail() пишет письмо в лог и тоже возвращает ok:true.
+      // Возвращать здесь sent.ok значило обещать письмо, которое никуда
+      // не ушло, и заставлять человека ждать его.
+      emailSent: sent.ok && sent.transport === "smtp",
       // Without SMTP the token would be unreachable for a self-hoster, so it is
       // surfaced in that case only — never once real mail is configured.
       verificationToken: !isSmtpConfigured() ? verificationToken : undefined,
