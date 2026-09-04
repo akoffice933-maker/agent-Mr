@@ -49,6 +49,40 @@ function sanitizeMeta(meta: unknown): AnalyticsMeta | null {
   return count > 0 ? out : null;
 }
 
+/**
+ * Событие активации, которое засчитывается организации ровно один раз.
+ *
+ * first_agent_message / first_approve отвечают на вопрос «какая доля
+ * зарегистрировавшихся дошла до первого ответа агента и до первого
+ * подтверждения». Посчитать их дважды нельзя — иначе метрика начнёт
+ * измерять активность, а не активацию.
+ *
+ * Уникальность обеспечивает частичный индекс analytics_events_first_once_idx
+ * (миграция 0014), а не проверка в коде: два одновременных запроса оба
+ * увидели бы пустую таблицу. ON CONFLICT DO NOTHING превращает гонку в
+ * молчаливый no-op вместо исключения.
+ *
+ * Возвращает true, только если событие записано именно сейчас — то есть
+ * оно действительно первое.
+ */
+export async function recordFirstEvent(
+  event: "first_agent_message" | "first_approve",
+  orgId: number,
+  meta?: unknown
+): Promise<boolean> {
+  const clean = sanitizeMeta(meta);
+  const res = await identityPool.query(
+    `INSERT INTO analytics_events (event, org_id, meta)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (event, org_id)
+       WHERE event IN ('first_agent_message', 'first_approve') AND org_id IS NOT NULL
+     DO NOTHING
+     RETURNING id`,
+    [event, orgId, clean ? JSON.stringify(clean) : null]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
 /** identity-plane запись — как reset.ts/dal.ts, напрямую через identityPool, без RLS. */
 export async function recordAnalyticsEvent(event: string, orgId: number | null, meta?: unknown): Promise<boolean> {
   if (!isAnalyticsEvent(event)) return false;

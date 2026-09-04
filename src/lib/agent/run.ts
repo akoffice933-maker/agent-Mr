@@ -20,6 +20,7 @@ import { authorize, type Role } from "./rbac";
 import type { TenantContext } from "@/lib/tenant/pool";
 import type { ParsedIntent } from "./router";
 import { getSettings, writeAudit } from "./safety";
+import { recordFirstEvent } from "@/lib/analytics-events";
 import { evaluatePolicy, toolToAction } from "./policy";
 import type { SafetySettings } from "./safety";
 import * as tools from "./tools";
@@ -241,8 +242,29 @@ export async function getPendingStates(): Promise<PendingStateMap> {
   return out;
 }
 
+/**
+ * Отметить событие активации, не мешая основному действию.
+ *
+ * Аналитика не имеет права уронить ответ агента или подтверждение
+ * операции: она пишется в identity-plane отдельным пулом, и её сбой
+ * (недоступная таблица, таймаут) не должен превращаться в 500 для
+ * пользователя. Поэтому ошибка только логируется.
+ */
+async function markFirst(event: "first_agent_message" | "first_approve", org: number, meta?: Record<string, string>) {
+  try {
+    if (await recordFirstEvent(event, org, meta)) log.info(`analytics.${event}`, { orgId: org });
+  } catch (e) {
+    log.error("analytics first-event failed", { event, orgId: org }, e);
+  }
+}
+
 async function insertAgentMessage(content: string, meta: AgentMeta | null): Promise<ChatMessageRow> {
-  const row = (await db.insert(messages).values({ organizationId: orgId(), role: "agent", content, meta }).returning())[0];
+  const org = orgId();
+  const row = (await db.insert(messages).values({ organizationId: org, role: "agent", content, meta }).returning())[0];
+  // Единственная точка, где рождается ответ агента, — поэтому счётчик
+  // активации ставится здесь, а не в роуте: /api/agent/chat не видит
+  // ответы, созданные подтверждением действия или UI-кнопкой.
+  await markFirst("first_agent_message", org);
   return serializeMessage(row);
 }
 
@@ -632,6 +654,12 @@ export async function resolvePending(
     .set({ status: "executing", attempts: sql`${pendingActions.attempts} + 1`, executedAt: new Date(), lastError: null, version: sql`${pendingActions.version} + 1` })
     .where(and(eq(pendingActions.id, id), eq(pendingActions.organizationId, org), inArray(pendingActions.status, ["pending", "failed"])))
     .returning();
+  // Переход состоялся ровно один раз (идемпотентность E6), значит именно
+  // здесь пользователь впервые подтвердил реальную операцию. Ставится до
+  // обращения к провайдеру: метрика измеряет решение пользователя, а не
+  // доступность внешнего API.
+  if (started.length) await markFirst("first_approve", org, { tool: pending.tool });
+
   if (!started.length) {
     return insertAgentMessage("Действие уже исполняется или уже выполнено — повторная операция не требуется (идемпотентность).", {
       tool: "apply_pending", toolLabel: pending.tool, platforms: [],
