@@ -32,7 +32,7 @@
     "@pg-ts/pg-embedded-linux-x64-gnu": "^0.2.3",
     "@tailwindcss/postcss": "4.1.17",
     "@types/ioredis-mock": "^8.2.8",
-    "@types/node": "22.19.15",
+    "@types/node": "26.4.0",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
